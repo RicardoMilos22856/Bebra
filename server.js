@@ -55,9 +55,10 @@ function json(res, status, payload) {
   res.end(body);
 }
 
-function isAuthorizedWithBody(req, body) {
+function isAuthorized(req) {
   let auth = req.headers.authorization || "";
   
+  // Логируем что пришло
   console.log("📨 Raw Authorization header:", auth);
   
   // Удаляем "Bearer " если есть
@@ -66,87 +67,6 @@ function isAuthorizedWithBody(req, body) {
   }
   
   auth = auth.trim();
-  
-  // ⭐ Проверяем в теле запроса (Janitor AI может отправлять здесь)
-  if (!auth && body && typeof body === "object") {
-    auth = body.api_key || "";
-    if (auth) {
-      console.log("📨 Extracted api_key from body:", auth);
-    }
-  }
-  
-  // ⭐ Проверяем query параметры
-  if (!auth && req.url) {
-    try {
-      const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
-      auth = url.searchParams.get("api_key") || "";
-      if (auth) {
-        console.log("📨 Extracted api_key from query:", auth);
-      }
-    } catch (err) {
-      console.error("❌ URL parsing error:", err.message);
-    }
-  }
-  
-  // ⭐ Проверяем custom заголовок X-API-Key
-  if (!auth) {
-    auth = req.headers["x-api-key"] || "";
-    if (auth) {
-      console.log("📨 Extracted from X-API-Key header:", auth);
-    }
-  }
-  
-  console.log("🔑 Extracted key:", auth);
-  console.log("📏 Key length:", auth.length, "Expected:", PROXY_ACCESS_KEY.length);
-  
-  const a = Buffer.from(auth);
-  const b = Buffer.from(PROXY_ACCESS_KEY);
-  
-  if (a.length !== b.length) {
-    console.warn("⚠️  Authorization failed: key length mismatch (received: " + a.length + ", expected: " + b.length + ")");
-    return false;
-  }
-  
-  try {
-    return timingSafeEqual(a, b);
-  } catch (err) {
-    console.error("⚠️  Authorization check failed:", err.message);
-    return false;
-  }
-}
-
-function isAuthorizedHealthCheck(req) {
-  let auth = req.headers.authorization || "";
-  
-  console.log("📨 Raw Authorization header:", auth);
-  
-  if (auth.startsWith("Bearer ")) {
-    auth = auth.slice(7);
-  }
-  
-  auth = auth.trim();
-  
-  // Проверяем query параметры
-  if (!auth && req.url) {
-    try {
-      const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
-      auth = url.searchParams.get("api_key") || "";
-      if (auth) {
-        console.log("📨 Extracted api_key from query:", auth);
-      }
-    } catch (err) {
-      console.error("❌ URL parsing error:", err.message);
-    }
-  }
-  
-  // Проверяем custom заголовок X-API-Key
-  if (!auth) {
-    auth = req.headers["x-api-key"] || "";
-    if (auth) {
-      console.log("📨 Extracted from X-API-Key header:", auth);
-    }
-  }
-  
   console.log("🔑 Extracted key:", auth);
   console.log("📏 Key length:", auth.length, "Expected:", PROXY_ACCESS_KEY.length);
   
@@ -355,14 +275,6 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === "GET" && (pathname === "/health" || pathname === "/")) {
     console.log(`📊 Health check from ${clientIp}`);
-    
-    if (!isAuthorizedHealthCheck(req)) {
-      console.warn(`🔐 Unauthorized health check from ${clientIp}`);
-      return json(res, 401, {
-        error: { message: "Unauthorized. Use the proxy access key as a Bearer token.", type: "authentication_error" },
-      });
-    }
-    
     return json(res, 200, {
       ok: true,
       service: "janitor-gemini-bridge",
@@ -370,16 +282,15 @@ const server = http.createServer(async (req, res) => {
     });
   }
 
+  if (!isAuthorized(req)) {
+    console.warn(`🔐 Unauthorized request from ${clientIp} to ${pathname}`);
+    return json(res, 401, {
+      error: { message: "Unauthorized. Use the proxy access key as a Bearer token.", type: "authentication_error" },
+    });
+  }
+
   if (req.method === "GET" && pathname === "/v1/models") {
     console.log(`📋 Models request from ${clientIp}`);
-    
-    if (!isAuthorizedHealthCheck(req)) {
-      console.warn(`🔐 Unauthorized models request from ${clientIp}`);
-      return json(res, 401, {
-        error: { message: "Unauthorized. Use the proxy access key as a Bearer token.", type: "authentication_error" },
-      });
-    }
-    
     try {
       const upstream = await fetch(`${UPSTREAM_BASE_URL}/v1/models`, {
         method: "GET",
@@ -412,14 +323,6 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
-    // ⭐ ПЕРЕМЕСТИЛИ проверку авторизации СЮДА (после чтения тела)
-    if (!isAuthorizedWithBody(req, body)) {
-      console.warn(`🔐 Unauthorized request from ${clientIp} to ${pathname}`);
-      return json(res, 401, {
-        error: { message: "Unauthorized. Use the proxy access key as a Bearer token.", type: "authentication_error" },
-      });
-    }
-
     if (body.model) {
       body.model = normalizeModelName(body.model);
     }
@@ -430,3 +333,87 @@ const server = http.createServer(async (req, res) => {
       body.max_completion_tokens = body.max_tokens;
       delete body.max_tokens;
     } else {
+      delete body.max_tokens;
+      delete body.max_completion_tokens;
+    }
+
+    addCachingSupport(body);
+
+    if (body.stream === true && INCLUDE_STREAM_USAGE) {
+      body.stream_options = { ...(body.stream_options || {}), include_usage: true };
+    }
+
+    const isGemini = isGeminiModel(body.model);
+    const isClaude = isClaudeModel(body.model);
+
+    console.log(JSON.stringify({
+      event: "chat_request",
+      timestamp: new Date().toISOString(),
+      model: body.model || "unspecified",
+      model_type: isGemini ? "gemini" : isClaude ? "claude" : "other",
+      stream: body.stream === true,
+      caching_enabled: ENABLE_CACHING,
+      client_ip: clientIp,
+    }));
+
+    const upstreamUrl = `${UPSTREAM_BASE_URL}/v1/chat/completions`;
+    try {
+      console.log(`🚀 Forwarding to upstream: ${upstreamUrl}`);
+      const upstream = await fetch(upstreamUrl, {
+        method: "POST",
+        headers: makeUpstreamHeaders(),
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(10 * 60_000),
+      });
+
+      console.log(JSON.stringify({
+        event: "upstream_response",
+        timestamp: new Date().toISOString(),
+        status: upstream.status,
+        model: body.model || "unspecified",
+        streaming: body.stream === true,
+        request_id: upstream.headers.get("x-request-id") || "unknown",
+      }));
+
+      if (upstream.status !== 200 && upstream.status !== 201) {
+        console.warn(`⚠️  Upstream returned status ${upstream.status}`);
+      }
+
+      if (body.stream === true) {
+        return await forwardStreamResponse(upstream, res);
+      } else {
+        return await forwardResponse(upstream, res);
+      }
+    } catch (error) {
+      console.error("❌ Upstream request failed:", error?.message || "unknown error");
+      console.error("   Stack:", error?.stack);
+      return json(res, 502, {
+        error: { message: "Could not reach rout.my", type: "proxy_error" },
+      });
+    }
+  }
+
+  console.warn(`⚠️  404 - Unknown endpoint: ${pathname} from ${clientIp}`);
+  return json(res, 404, {
+    error: { message: "Endpoint not found", type: "invalid_request_error" },
+  });
+});
+
+server.requestTimeout = 11 * 60_000;
+server.headersTimeout = 12 * 60_000;
+server.keepAliveTimeout = 65_000;
+
+server.listen(PORT, "0.0.0.0", () => {
+  console.log(`
+╔═══════════════════════════════════════╗
+║   Janitor AI → Gemini Bridge Server   ║
+╚═══════════════════════════════════════╝
+
+✅ Server listening on port ${PORT}
+📦 Caching Enabled: ${ENABLE_CACHING}
+🌐 API Base: ${UPSTREAM_BASE_URL}
+🔑 Authorization: ${PROXY_ACCESS_KEY ? "Enabled" : "DISABLED"}
+
+Ready to accept requests!
+`);
+});
