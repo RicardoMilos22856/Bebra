@@ -10,9 +10,6 @@ const INCLUDE_STREAM_USAGE = String(process.env.INCLUDE_STREAM_USAGE || "false")
 const ENABLE_CACHING = String(process.env.ENABLE_CACHING || "true").toLowerCase() === "true";
 const MAX_BODY_BYTES = Number(process.env.MAX_BODY_BYTES || 20 * 1024 * 1024);
 
-// Для совместимости с Janitor AI
-const JANITOR_COMPATIBILITY_MODE = String(process.env.JANITOR_COMPATIBILITY_MODE || "true").toLowerCase() === "true";
-
 if (!ROUTMY_API_KEY) {
   console.error("Missing ROUTMY_API_KEY environment variable.");
   process.exit(1);
@@ -22,8 +19,6 @@ if (!PROXY_ACCESS_KEY) {
   console.error("Missing PROXY_ACCESS_KEY. Set a private key so this server cannot be used as an open proxy.");
   process.exit(1);
 }
-
-const allowedPaths = new Set(["/v1/chat/completions", "/v1/models"]);
 
 function json(res, status, payload) {
   const body = JSON.stringify(payload);
@@ -86,82 +81,54 @@ function isClaudeModel(model) {
   return typeof model === "string" && model.toLowerCase().includes("claude");
 }
 
-/**
- * Нормализует названия моделей для rout.my
- * Janitor AI может отправлять названия в разных форматах
- */
 function normalizeModelName(model) {
   if (!model || typeof model !== "string") return model;
-  
-  // Преобразования для Gemini
   if (model.includes("gemini")) {
-    // Если уже имеет префикс google/, пропускаем
     if (model.startsWith("google/")) return model;
-    
-    // google/gemini-2.0-flash, google/gemini-1.5-pro и т.д.
     return `google/${model}`;
   }
-
-  // Преобразования для Claude
   if (model.includes("claude")) {
     if (model.startsWith("anthropic/")) return model;
     return `anthropic/${model}`;
   }
-
   return model;
 }
 
-/**
- * Добавляет кеширование в зависимости от модели
- */
 function addCachingSupport(body) {
   if (!ENABLE_CACHING) return;
-
   const model = body.model;
-
-  // Для Claude моделей используем smart_cache
   if (isClaudeModel(model)) {
     if (!body.smart_cache) {
       body.smart_cache = true;
     }
   }
-
-  // Для Gemini моделей используем cache_control в системном промпте
   if (isGeminiModel(model)) {
-    // Обрабатываем messages для добавления кеширования
     if (Array.isArray(body.messages) && body.messages.length > 0) {
-      // Добавляем кеш к системному сообщению или первому сообщению
       for (let i = 0; i < body.messages.length; i++) {
         const msg = body.messages[i];
-        
-        // Если это системное сообщение
         if (msg.role === "system" && typeof msg.content === "string") {
-          // Преобразуем в структурированный формат с кешем
           body.messages[i] = {
             role: "system",
             content: [
               {
                 type: "text",
                 text: msg.content,
-                cache_control: { type: "ephemeral" }
-              }
-            ]
+                cache_control: { type: "ephemeral" },
+              },
+            ],
           };
           break;
         }
-        
-        // Если это первое пользовательское сообщение в начале
         if (msg.role === "user" && i < 2 && typeof msg.content === "string") {
-          // Кешируем контекст в первом пользовательском сообщении
           body.messages[i] = {
             role: "user",
             content: [
               {
                 type: "text",
                 text: msg.content,
-                cache_control: { type: "ephemeral" }
-              }
-            ]
+                cache_control: { type: "ephemeral" },
+              },
+            ],
           };
           break;
         }
@@ -181,64 +148,45 @@ function cleanUpstreamHeaders(upstreamHeaders, res) {
     "x-ratelimit-reset",
     "x-context-limit",
     "x-context-original-tokens",
-    // Для Gemini кеширования
     "x-cache-used-input-tokens",
     "x-cache-creation-input-tokens",
   ];
-  
   for (const name of allowed) {
     const value = upstreamHeaders.get(name);
     if (value) res.setHeader(name, value);
   }
-  
   res.setHeader("x-proxy-name", "janitor-gemini-bridge");
   res.setHeader("cache-control", "no-store");
 }
 
-/**
- * Обрабатывает SSE поток (для streaming responses)
- */
 async function forwardStreamResponse(upstream, res) {
   res.statusCode = upstream.status;
   cleanUpstreamHeaders(upstream.headers, res);
-  
   if (!upstream.body) {
     res.end();
     return;
   }
-
   const reader = upstream.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
-
   try {
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
-
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split("\n");
-      
-      // Оставляем последнюю неполную строку в буфере
       buffer = lines.pop() || "";
-
       for (const line of lines) {
         if (!line.trim()) {
-          // Пустая строка - разделитель событий
           res.write("\n");
           continue;
         }
-
-        // Передаем SSE данные как есть
         res.write(line + "\n");
       }
     }
-
-    // Обрабатываем оставшиеся данные в буфере
     if (buffer.trim()) {
       res.write(buffer + "\n");
     }
-
     res.end();
   } catch (error) {
     console.error("Stream error:", error?.message || "unknown error");
@@ -250,18 +198,13 @@ async function forwardStreamResponse(upstream, res) {
   }
 }
 
-/**
- * Обрабатывает обычный ответ (non-streaming)
- */
 async function forwardResponse(upstream, res) {
   res.statusCode = upstream.status;
   cleanUpstreamHeaders(upstream.headers, res);
-
   if (!upstream.body) {
     res.end();
     return;
   }
-
   const reader = upstream.body.getReader();
   try {
     while (true) {
@@ -286,13 +229,11 @@ const server = http.createServer(async (req, res) => {
   const requestUrl = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
   const pathname = requestUrl.pathname;
 
-  // Health check для Janitor AI мониторинга
   if (req.method === "GET" && (pathname === "/health" || pathname === "/")) {
-    return json(res, 200, { 
-      ok: true, 
+    return json(res, 200, {
+      ok: true,
       service: "janitor-gemini-bridge",
-      janitor_mode: JANITOR_COMPATIBILITY_MODE,
-      caching_enabled: ENABLE_CACHING
+      caching_enabled: ENABLE_CACHING,
     });
   }
 
@@ -302,7 +243,6 @@ const server = http.createServer(async (req, res) => {
     });
   }
 
-  // Список доступных моделей
   if (req.method === "GET" && pathname === "/v1/models") {
     try {
       const upstream = await fetch(`${UPSTREAM_BASE_URL}/v1/models`, {
@@ -317,7 +257,6 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  // Обработка chat completions
   if (req.method === "POST" && pathname === "/v1/chat/completions") {
     let body;
     try {
@@ -334,12 +273,10 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
-    // Нормализуем название модели
     if (body.model) {
       body.model = normalizeModelName(body.model);
     }
 
-    // Обработка max_tokens / max_completion_tokens
     if (Number.isInteger(body.max_completion_tokens) && body.max_completion_tokens > 0) {
       delete body.max_tokens;
     } else if (Number.isInteger(body.max_tokens) && body.max_tokens > 0) {
@@ -350,10 +287,8 @@ const server = http.createServer(async (req, res) => {
       delete body.max_completion_tokens;
     }
 
-    // Добавляем поддержку кеширования
     addCachingSupport(body);
 
-    // Включаем usage в потоке если нужно
     if (body.stream === true && INCLUDE_STREAM_USAGE) {
       body.stream_options = { ...(body.stream_options || {}), include_usage: true };
     }
@@ -368,11 +303,9 @@ const server = http.createServer(async (req, res) => {
       model_type: isGemini ? "gemini" : isClaude ? "claude" : "other",
       stream: body.stream === true,
       caching_enabled: ENABLE_CACHING,
-      janitor_mode: JANITOR_COMPATIBILITY_MODE,
     }));
 
     const upstreamUrl = `${UPSTREAM_BASE_URL}/v1/chat/completions`;
-    
     try {
       const upstream = await fetch(upstreamUrl, {
         method: "POST",
@@ -390,7 +323,6 @@ const server = http.createServer(async (req, res) => {
         request_id: upstream.headers.get("x-request-id") || "unknown",
       }));
 
-      // Выбираем обработчик в зависимости от типа ответа
       if (body.stream === true) {
         return await forwardStreamResponse(upstream, res);
       } else {
@@ -404,7 +336,6 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  // 404 для неизвестных путей
   return json(res, 404, {
     error: { message: "Endpoint not found", type: "invalid_request_error" },
   });
@@ -421,11 +352,7 @@ server.listen(PORT, "0.0.0.0", () => {
 ╚═══════════════════════════════════════╝
 
 Server listening on port ${PORT}
-- Janitor Compatibility Mode: ${JANITOR_COMPATIBILITY_MODE}
 - Caching Enabled: ${ENABLE_CACHING}
 - API Base: ${UPSTREAM_BASE_URL}
-
-Setup:
-1. In Janitor AI, set custom endpoint to: http://your-server:${PORT}/v1/
-2. Use this Bearer token in Janitor AI settings
-3. Model names will be auto-normalized for rout.my
+`);
+});
