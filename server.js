@@ -19,7 +19,6 @@ const PORT = (() => {
 })();
 
 const ROUTMY_API_KEY = process.env.ROUTMY_API_KEY;
-const PROXY_ACCESS_KEY = process.env.PROXY_ACCESS_KEY;
 const UPSTREAM_BASE_URL = (process.env.UPSTREAM_BASE_URL || "https://api.rout.my").replace(/\/+$/, "");
 const INCLUDE_STREAM_USAGE = String(process.env.INCLUDE_STREAM_USAGE || "false").toLowerCase() === "true";
 const ENABLE_CACHING = String(process.env.ENABLE_CACHING || "true").toLowerCase() === "true";
@@ -31,15 +30,9 @@ console.log("  UPSTREAM_BASE_URL:", UPSTREAM_BASE_URL);
 console.log("  ENABLE_CACHING:", ENABLE_CACHING);
 console.log("  INCLUDE_STREAM_USAGE:", INCLUDE_STREAM_USAGE);
 console.log("  ROUTMY_API_KEY:", ROUTMY_API_KEY ? "✓ SET (" + ROUTMY_API_KEY.substring(0, 10) + "...)" : "✗ MISSING");
-console.log("  PROXY_ACCESS_KEY:", PROXY_ACCESS_KEY ? "✓ SET (" + PROXY_ACCESS_KEY.substring(0, 10) + "...)" : "✗ MISSING");
 
 if (!ROUTMY_API_KEY) {
   console.error("❌ Missing ROUTMY_API_KEY environment variable.");
-  process.exit(1);
-}
-
-if (!PROXY_ACCESS_KEY) {
-  console.error("❌ Missing PROXY_ACCESS_KEY. Set a private key so this server cannot be used as an open proxy.");
   process.exit(1);
 }
 
@@ -54,22 +47,8 @@ function json(res, status, payload) {
   });
   res.end(body);
 }
-
-function isAuthorized(req) {
-  let auth = req.headers.authorization || "";
-  
-  // Логируем что пришло
-  console.log("📨 Raw Authorization header:", auth);
-  
-  // Удаляем "Bearer " если есть
-  if (auth.startsWith("Bearer ")) {
-    auth = auth.slice(7);
-  }
   
   auth = auth.trim();
-  console.log("🔑 Extracted key:", auth);
-  console.log("📏 Key length:", auth.length, "Expected:", PROXY_ACCESS_KEY.length);
-  
   const a = Buffer.from(auth);
   const b = Buffer.from(PROXY_ACCESS_KEY);
   
