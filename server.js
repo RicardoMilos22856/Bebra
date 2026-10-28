@@ -20,7 +20,7 @@ const PORT = (() => {
 
 const ROUTMY_API_KEY = process.env.ROUTMY_API_KEY;
 const PROXY_ACCESS_KEY = process.env.PROXY_ACCESS_KEY;
-const UPSTREAM_BASE_URL = (process.env.UPSTREAM_BASE_URL || "https://api.rout.my/v1").replace(/\/+$/, "");
+const UPSTREAM_BASE_URL = (process.env.UPSTREAM_BASE_URL || "https://api.rout.my").replace(/\/+$/, "");
 const INCLUDE_STREAM_USAGE = String(process.env.INCLUDE_STREAM_USAGE || "false").toLowerCase() === "true";
 const ENABLE_CACHING = String(process.env.ENABLE_CACHING || "true").toLowerCase() === "true";
 const MAX_BODY_BYTES = Number(process.env.MAX_BODY_BYTES || 20 * 1024 * 1024);
