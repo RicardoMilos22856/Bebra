@@ -16,7 +16,9 @@ const INCLUDE_STREAM_USAGE =
 const ENABLE_CACHING =
   String(process.env.ENABLE_CACHING || "true").toLowerCase() === "true";
 
-const MAX_BODY_BYTES = Number(process.env.MAX_BODY_BYTES || 20 * 1024 * 1024);
+const MAX_BODY_BYTES = Number(
+  process.env.MAX_BODY_BYTES || 20 * 1024 * 1024
+);
 
 if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) {
   console.error("Invalid PORT");
@@ -106,17 +108,15 @@ function normalizeModelName(model) {
   return model;
 }
 
-// Caching formats depend on what rout.my supports for each model.
-// Disabled transformations are safer than sending unsupported message formats.
+// Gemini: leave messages unchanged so rout.my / Gemini can
+// handle automatic caching without unsupported cache_control fields.
+// Claude: enable rout.my smart caching when caching is enabled.
 function addCachingSupport(body) {
   if (!ENABLE_CACHING) return;
 
   if (isClaudeModel(body.model)) {
     body.smart_cache = true;
   }
-
-  // Do not inject cache_control into OpenAI-compatible Gemini messages:
-  // support for that format must be confirmed by rout.my.
 }
 
 function setResponseHeaders(res) {
@@ -126,7 +126,10 @@ function setResponseHeaders(res) {
     "Access-Control-Allow-Headers",
     "Content-Type, Authorization"
   );
-  res.setHeader("Access-Control-Expose-Headers", "x-request-id, x-proxy-name");
+  res.setHeader(
+    "Access-Control-Expose-Headers",
+    "x-request-id, x-proxy-name, x-cache-used-input-tokens, x-cache-creation-input-tokens"
+  );
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("x-proxy-name", "janitor-gemini-bridge");
 }
@@ -233,7 +236,6 @@ async function forwardStreamResponse(upstream, res) {
 }
 
 const server = http.createServer(async (req, res) => {
-  // Set CORS headers before handling any route or error.
   setResponseHeaders(res);
 
   const requestUrl = new URL(
@@ -242,7 +244,8 @@ const server = http.createServer(async (req, res) => {
   );
 
   const pathname = requestUrl.pathname;
-  const clientIp = req.headers["x-forwarded-for"] ||
+  const clientIp =
+    req.headers["x-forwarded-for"] ||
     req.socket.remoteAddress ||
     "unknown";
 
