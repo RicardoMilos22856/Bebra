@@ -2,7 +2,22 @@ import http from "node:http";
 import { URL } from "node:url";
 import { timingSafeEqual } from "node:crypto";
 
-const PORT = Number(process.env.PORT || 3000);
+// ✅ Улучшенная обработка порта для Render
+const PORT = (() => {
+  const envPort = process.env.PORT;
+  if (!envPort) {
+    console.log("ℹ️  PORT not set in environment, using default: 3000");
+    return 3000;
+  }
+  const parsed = parseInt(envPort, 10);
+  if (isNaN(parsed)) {
+    console.error("❌ Invalid PORT value:", envPort);
+    process.exit(1);
+  }
+  console.log("✅ Using Render-assigned port:", parsed);
+  return parsed;
+})();
+
 const ROUTMY_API_KEY = process.env.ROUTMY_API_KEY;
 const PROXY_ACCESS_KEY = process.env.PROXY_ACCESS_KEY;
 const UPSTREAM_BASE_URL = (process.env.UPSTREAM_BASE_URL || "https://api.rout.my/v1").replace(/\/+$/, "");
@@ -10,15 +25,25 @@ const INCLUDE_STREAM_USAGE = String(process.env.INCLUDE_STREAM_USAGE || "false")
 const ENABLE_CACHING = String(process.env.ENABLE_CACHING || "true").toLowerCase() === "true";
 const MAX_BODY_BYTES = Number(process.env.MAX_BODY_BYTES || 20 * 1024 * 1024);
 
+console.log("🔧 Initializing environment variables...");
+console.log("  PORT:", PORT);
+console.log("  UPSTREAM_BASE_URL:", UPSTREAM_BASE_URL);
+console.log("  ENABLE_CACHING:", ENABLE_CACHING);
+console.log("  INCLUDE_STREAM_USAGE:", INCLUDE_STREAM_USAGE);
+console.log("  ROUTMY_API_KEY:", ROUTMY_API_KEY ? "✓ SET (" + ROUTMY_API_KEY.substring(0, 10) + "...)" : "✗ MISSING");
+console.log("  PROXY_ACCESS_KEY:", PROXY_ACCESS_KEY ? "✓ SET (" + PROXY_ACCESS_KEY.substring(0, 10) + "...)" : "✗ MISSING");
+
 if (!ROUTMY_API_KEY) {
-  console.error("Missing ROUTMY_API_KEY environment variable.");
+  console.error("❌ Missing ROUTMY_API_KEY environment variable.");
   process.exit(1);
 }
 
 if (!PROXY_ACCESS_KEY) {
-  console.error("Missing PROXY_ACCESS_KEY. Set a private key so this server cannot be used as an open proxy.");
+  console.error("❌ Missing PROXY_ACCESS_KEY. Set a private key so this server cannot be used as an open proxy.");
   process.exit(1);
 }
+
+console.log("✅ All environment variables loaded successfully!\n");
 
 function json(res, status, payload) {
   const body = JSON.stringify(payload);
@@ -35,10 +60,14 @@ function isAuthorized(req) {
   const supplied = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
   const a = Buffer.from(supplied);
   const b = Buffer.from(PROXY_ACCESS_KEY);
-  if (a.length !== b.length) return false;
+  if (a.length !== b.length) {
+    console.warn("⚠️  Authorization failed: key length mismatch (received: " + a.length + ", expected: " + b.length + ")");
+    return false;
+  }
   try {
     return timingSafeEqual(a, b);
-  } catch {
+  } catch (err) {
+    console.error("⚠️  Authorization check failed:", err.message);
     return false;
   }
 }
@@ -189,7 +218,7 @@ async function forwardStreamResponse(upstream, res) {
     }
     res.end();
   } catch (error) {
-    console.error("Stream error:", error?.message || "unknown error");
+    console.error("❌ Stream error:", error?.message || "unknown error");
     if (!res.headersSent) {
       json(res, 502, { error: { message: "Stream processing failed", type: "proxy_error" } });
     } else {
@@ -216,7 +245,7 @@ async function forwardResponse(upstream, res) {
     }
     res.end();
   } catch (error) {
-    console.error("Response stream failed:", error?.message || "unknown error");
+    console.error("❌ Response stream failed:", error?.message || "unknown error");
     if (!res.headersSent) {
       json(res, 502, { error: { message: "Response failed", type: "proxy_error" } });
     } else {
@@ -228,8 +257,10 @@ async function forwardResponse(upstream, res) {
 const server = http.createServer(async (req, res) => {
   const requestUrl = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
   const pathname = requestUrl.pathname;
+  const clientIp = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "unknown";
 
   if (req.method === "GET" && (pathname === "/health" || pathname === "/")) {
+    console.log(`📊 Health check from ${clientIp}`);
     return json(res, 200, {
       ok: true,
       service: "janitor-gemini-bridge",
@@ -238,30 +269,35 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (!isAuthorized(req)) {
+    console.warn(`🔐 Unauthorized request from ${clientIp} to ${pathname}`);
     return json(res, 401, {
       error: { message: "Unauthorized. Use the proxy access key as a Bearer token.", type: "authentication_error" },
     });
   }
 
   if (req.method === "GET" && pathname === "/v1/models") {
+    console.log(`📋 Models request from ${clientIp}`);
     try {
       const upstream = await fetch(`${UPSTREAM_BASE_URL}/v1/models`, {
         method: "GET",
         headers: { authorization: `Bearer ${ROUTMY_API_KEY}`, accept: "application/json" },
         signal: AbortSignal.timeout(60_000),
       });
+      console.log(`✅ Models upstream response: ${upstream.status}`);
       return await forwardResponse(upstream, res);
     } catch (error) {
-      console.error("Models request failed:", error?.message || "unknown error");
+      console.error("❌ Models request failed:", error?.message || "unknown error");
       return json(res, 502, { error: { message: "Could not reach rout.my", type: "proxy_error" } });
     }
   }
 
   if (req.method === "POST" && pathname === "/v1/chat/completions") {
+    console.log(`💬 Chat request from ${clientIp}`);
     let body;
     try {
       body = await readJsonBody(req);
     } catch (error) {
+      console.error(`❌ JSON parse error: ${error.message}`);
       return json(res, error.status || 400, {
         error: { message: error.message || "Invalid request", type: "invalid_request_error" },
       });
@@ -303,10 +339,12 @@ const server = http.createServer(async (req, res) => {
       model_type: isGemini ? "gemini" : isClaude ? "claude" : "other",
       stream: body.stream === true,
       caching_enabled: ENABLE_CACHING,
+      client_ip: clientIp,
     }));
 
     const upstreamUrl = `${UPSTREAM_BASE_URL}/v1/chat/completions`;
     try {
+      console.log(`🚀 Forwarding to upstream: ${upstreamUrl}`);
       const upstream = await fetch(upstreamUrl, {
         method: "POST",
         headers: makeUpstreamHeaders(),
@@ -323,19 +361,25 @@ const server = http.createServer(async (req, res) => {
         request_id: upstream.headers.get("x-request-id") || "unknown",
       }));
 
+      if (upstream.status !== 200 && upstream.status !== 201) {
+        console.warn(`⚠️  Upstream returned status ${upstream.status}`);
+      }
+
       if (body.stream === true) {
         return await forwardStreamResponse(upstream, res);
       } else {
         return await forwardResponse(upstream, res);
       }
     } catch (error) {
-      console.error("Upstream request failed:", error?.message || "unknown error");
+      console.error("❌ Upstream request failed:", error?.message || "unknown error");
+      console.error("   Stack:", error?.stack);
       return json(res, 502, {
         error: { message: "Could not reach rout.my", type: "proxy_error" },
       });
     }
   }
 
+  console.warn(`⚠️  404 - Unknown endpoint: ${pathname} from ${clientIp}`);
   return json(res, 404, {
     error: { message: "Endpoint not found", type: "invalid_request_error" },
   });
@@ -351,8 +395,11 @@ server.listen(PORT, "0.0.0.0", () => {
 ║   Janitor AI → Gemini Bridge Server   ║
 ╚═══════════════════════════════════════╝
 
-Server listening on port ${PORT}
-- Caching Enabled: ${ENABLE_CACHING}
-- API Base: ${UPSTREAM_BASE_URL}
+✅ Server listening on port ${PORT}
+📦 Caching Enabled: ${ENABLE_CACHING}
+🌐 API Base: ${UPSTREAM_BASE_URL}
+🔑 Authorization: ${PROXY_ACCESS_KEY ? "Enabled" : "DISABLED"}
+
+Ready to accept requests!
 `);
 });
