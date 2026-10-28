@@ -56,14 +56,28 @@ function json(res, status, payload) {
 }
 
 function isAuthorized(req) {
-  const auth = req.headers.authorization || "";
-  const supplied = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
-  const a = Buffer.from(supplied);
+  let auth = req.headers.authorization || "";
+  
+  // Логируем что пришло
+  console.log("📨 Raw Authorization header:", auth);
+  
+  // Удаляем "Bearer " если есть
+  if (auth.startsWith("Bearer ")) {
+    auth = auth.slice(7);
+  }
+  
+  auth = auth.trim();
+  console.log("🔑 Extracted key:", auth);
+  console.log("📏 Key length:", auth.length, "Expected:", PROXY_ACCESS_KEY.length);
+  
+  const a = Buffer.from(auth);
   const b = Buffer.from(PROXY_ACCESS_KEY);
+  
   if (a.length !== b.length) {
     console.warn("⚠️  Authorization failed: key length mismatch (received: " + a.length + ", expected: " + b.length + ")");
     return false;
   }
+  
   try {
     return timingSafeEqual(a, b);
   } catch (err) {
