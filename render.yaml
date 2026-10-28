@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: routmy-gemini-bridge
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: ROUTMY_API_KEY
+        sync: false
+      - key: PROXY_ACCESS_KEY
+        sync: false
+      - key: UPSTREAM_BASE_URL
+        value: https://api.rout.my
+      - key: INCLUDE_STREAM_USAGE
+        value: "false"
