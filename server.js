@@ -111,6 +111,68 @@ function addCachingSupport(body) {
   }
 }
 
+// ==================== ФОРВАРДИНГ (ПЕРЕНЕСЕНО ВЫШЕ ОШИБКИ) ====================
+function cleanUpstreamHeaders(upstream, res) {
+  const allowed = [
+    "content-type", "x-request-id", "retry-after", "x-ratelimit-limit",
+    "x-ratelimit-remaining", "x-ratelimit-reset", "x-context-limit",
+    "x-context-original-tokens", "x-cache-used-input-tokens", "x-cache-creation-input-tokens"
+  ];
+
+  for (const name of allowed) {
+    const value = upstream.headers.get(name);
+    if (value) res.setHeader(name, value);
+  }
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Cache-Control", "no-store");
+}
+
+async function forwardResponse(upstream, res) {
+  res.statusCode = upstream.status;
+  cleanUpstreamHeaders(upstream, res);
+
+  if (!upstream.body) return res.end();
+
+  const reader = upstream.body.getReader();
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (!res.write(Buffer.from(value))) await new Promise(resolve => res.once("drain", resolve));
+    }
+    res.end();
+  } catch (e) {
+    console.error("Forward failed:", e.message);
+    if (!res.headersSent) json(res, 502, { error: { message: "Response forwarding failed", type: "proxy_error" } });
+    else res.destroy(e);
+  }
+}
+
+async function forwardStreamResponse(upstream, res) {
+  res.statusCode = upstream.status;
+  cleanUpstreamHeaders(upstream, res);
+
+  if (!upstream.body) return res.end();
+
+  const reader = upstream.body.getReader();
+  const decoder = new TextDecoder();
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      const chunk = decoder.decode(value, { stream: true });
+      if (chunk) res.write(chunk);
+    }
+    const remaining = decoder.decode();
+    if (remaining) res.write(remaining);
+    res.end();
+  } catch (e) {
+    console.error("Stream forward failed:", e.message);
+    if (!res.headersSent) json(res, 502, { error: { message: "Stream forwarding failed", type: "proxy_error" } });
+    else res.destroy(e);
+  }
+}
+
 // ==================== ОСНОВНОЙ СЕРВЕР ====================
 const server = http.createServer(async (req, res) => {
   // CORS
@@ -119,6 +181,12 @@ const server = http.createServer(async (req, res) => {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
   res.setHeader("Access-Control-Expose-Headers", "x-request-id, x-proxy-name, x-cache-used-input-tokens, x-cache-creation-input-tokens");
   res.setHeader("Cache-Control", "no-store");
+
+  // OPTIONS Preflight
+  if (req.method === "OPTIONS") {
+    res.writeHead(204);
+    return res.end();
+  }
 
   // Health check
   if (req.method === "GET" && (req.url === "/" || req.url === "/health")) {
@@ -228,68 +296,6 @@ const server = http.createServer(async (req, res) => {
 
   return json(res, 404, { error: { message: "Endpoint not found", type: "invalid_request_error" } });
 });
-
-// ==================== ФОРВАРДИНГ ====================
-function cleanUpstreamHeaders(upstream, res) {
-  const allowed = [
-    "content-type", "x-request-id", "retry-after", "x-ratelimit-limit",
-    "x-ratelimit-remaining", "x-ratelimit-reset", "x-context-limit",
-    "x-context-original-tokens", "x-cache-used-input-tokens", "x-cache-creation-input-tokens"
-  ];
-
-  for (const name of allowed) {
-    const value = upstream.headers.get(name);
-    if (value) res.setHeader(name, value);
-  }
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Cache-Control", "no-store");
-}
-
-async function forwardResponse(upstream, res) {
-  res.statusCode = upstream.status;
-  cleanUpstreamHeaders(upstream, res);
-
-  if (!upstream.body) return res.end();
-
-  const reader = upstream.body.getReader();
-  try {
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      if (!res.write(Buffer.from(value))) await new Promise(resolve => res.once("drain", resolve));
-    }
-    res.end();
-  } catch (e) {
-    console.error("Forward failed:", e.message);
-    if (!res.headersSent) json(res, 502, { error: { message: "Response forwarding failed", type: "proxy_error" } });
-    else res.destroy(e);
-  }
-}
-
-async function forwardStreamResponse(upstream, res) {
-  res.statusCode = upstream.status;
-  cleanUpstreamHeaders(upstream, res);
-
-  if (!upstream.body) return res.end();
-
-  const reader = upstream.body.getReader();
-  const decoder = new TextDecoder();
-  try {
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      const chunk = decoder.decode(value, { stream: true });
-      if (chunk) res.write(chunk);
-    }
-    const remaining = decoder.decode();
-    if (remaining) res.write(remaining);
-    res.end();
-  } catch (e) {
-    console.error("Stream forward failed:", e.message);
-    if (!res.headersSent) json(res, 502, { error: { message: "Stream forwarding failed", type: "proxy_error" } });
-    else res.destroy(e);
-  }
-}
 
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`✅ Server listening on port ${PORT}`);
