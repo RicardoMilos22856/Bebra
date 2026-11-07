@@ -240,6 +240,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     // ==================== БРОНЕБОЙНЫЙ ОБХОД ЦЕНЗУРЫ ДЛЯ GEMINI ====================
+        // ==================== БРОНЕБОЙНЫЙ ОБХОД ЦЕНЗУРЫ ДЛЯ GEMINI ====================
     if (isGeminiModel(body.model)) {
       const targetSettings = [
         { category: "HATE_SPEECH", threshold: "BLOCK_NONE" },
@@ -249,8 +250,18 @@ const server = http.createServer(async (req, res) => {
         { category: "CIVIC_INTEGRITY", threshold: "BLOCK_NONE" }
       ];
 
+      // Передаем настройки только в корне (OpenAI совместимый режим для большинства шлюзов)
       body.safety_settings = targetSettings;
-      body.thinking_effort = "low";
+
+      // Если в Janitor AI/запросе уже пришел extra_body, подмешиваем туда настройки
+      // Убираем принудительный 'thinking_effort', так как он часто вызывает 400 ошибку на OpenAI-совместимых эндпоинтах
+      if (body.extra_body && typeof body.extra_body === 'object') {
+        body.extra_body.safety_settings = targetSettings;
+      } else {
+        body.extra_body = { safety_settings: targetSettings };
+      }
+    }
+      body.thinking_effort = "medium";
 
       // Официальный контейнер для OpenAI-совместимых прокси (rout.my игнорирует в корне)
       body.extra_body = {
