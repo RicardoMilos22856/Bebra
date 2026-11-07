@@ -1,12 +1,12 @@
-import http from "node:http";
-import { URL } from "node:url";
 
-// ==================== КОНФИГУРАЦИЯ ====================
+import http from "node:http";
+
+// ==================== CONFIGURATION ====================
 const PORT = Number.parseInt(process.env.PORT || "3000", 10);
 
 const ROUTMY_API_KEY = process.env.ROUTMY_API_KEY;
 const UPSTREAM_BASE_URL = (
-  process.env.UPSTREAM_BASE_URL || "https://api.rout.my"
+  process.env.UPSTREAM_BASE_URL || "https://rout.my"
 ).replace(/\/+$/, "");
 
 const INCLUDE_STREAM_USAGE =
@@ -19,7 +19,7 @@ const MAX_BODY_BYTES = Number(
   process.env.MAX_BODY_BYTES || 20 * 1024 * 1024
 );
 
-// ==================== ВАЛИДАЦИЯ ====================
+// ==================== VALIDATION ====================
 if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) {
   console.error("Invalid PORT");
   process.exit(1);
@@ -37,7 +37,7 @@ console.log("ENABLE_CACHING:", ENABLE_CACHING);
 console.log("INCLUDE_STREAM_USAGE:", INCLUDE_STREAM_USAGE);
 console.log("ROUTMY_API_KEY: configured");
 
-// ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
+// ==================== HELPERS ====================
 function json(res, status, payload) {
   const body = JSON.stringify(payload);
   res.writeHead(status, {
@@ -54,11 +54,13 @@ async function readJsonBody(req) {
 
   for await (const chunk of req) {
     size += chunk.length;
+
     if (size > MAX_BODY_BYTES) {
       const error = new Error("Request body too large");
       error.status = 413;
       throw error;
     }
+
     chunks.push(chunk);
   }
 
@@ -80,11 +82,13 @@ function makeUpstreamHeaders() {
 }
 
 function isGeminiModel(model) {
-  return typeof model === "string" && model.toLowerCase().includes("gemini");
+  return typeof model === "string" &&
+    model.toLowerCase().includes("gemini");
 }
 
 function isClaudeModel(model) {
-  return typeof model === "string" && model.toLowerCase().includes("claude");
+  return typeof model === "string" &&
+    model.toLowerCase().includes("claude");
 }
 
 function normalizeModelName(model) {
@@ -103,26 +107,35 @@ function normalizeModelName(model) {
   return model;
 }
 
-// ==================== КЭШИНГ (только Claude) ====================
+// ==================== CACHING ====================
 function addCachingSupport(body) {
   if (!ENABLE_CACHING) return;
+
   if (isClaudeModel(body.model)) {
     body.smart_cache = true;
   }
 }
 
-// ==================== ФОРВАРДИНГ ====================
+// ==================== RESPONSE FORWARDING ====================
 function cleanUpstreamHeaders(upstream, res) {
   const allowed = [
-    "content-type", "x-request-id", "retry-after", "x-ratelimit-limit",
-    "x-ratelimit-remaining", "x-ratelimit-reset", "x-context-limit",
-    "x-context-original-tokens", "x-cache-used-input-tokens", "x-cache-creation-input-tokens"
+    "content-type",
+    "x-request-id",
+    "retry-after",
+    "x-ratelimit-limit",
+    "x-ratelimit-remaining",
+    "x-ratelimit-reset",
+    "x-context-limit",
+    "x-context-original-tokens",
+    "x-cache-used-input-tokens",
+    "x-cache-creation-input-tokens",
   ];
 
   for (const name of allowed) {
     const value = upstream.headers.get(name);
     if (value) res.setHeader(name, value);
   }
+
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Cache-Control", "no-store");
 }
@@ -134,17 +147,31 @@ async function forwardResponse(upstream, res) {
   if (!upstream.body) return res.end();
 
   const reader = upstream.body.getReader();
+
   try {
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
-      if (!res.write(Buffer.from(value))) await new Promise(resolve => res.once("drain", resolve));
+
+      if (!res.write(Buffer.from(value))) {
+        await new Promise(resolve => res.once("drain", resolve));
+      }
     }
+
     res.end();
   } catch (e) {
     console.error("Forward failed:", e.message);
-    if (!res.headersSent) json(res, 502, { error: { message: "Response forwarding failed", type: "proxy_error" } });
-    else res.destroy(e);
+
+    if (!res.headersSent) {
+      json(res, 502, {
+        error: {
+          message: "Response forwarding failed",
+          type: "proxy_error",
+        },
+      });
+    } else {
+      res.destroy(e);
+    }
   }
 }
 
@@ -156,40 +183,62 @@ async function forwardStreamResponse(upstream, res) {
 
   const reader = upstream.body.getReader();
   const decoder = new TextDecoder();
+
   try {
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
+
       const chunk = decoder.decode(value, { stream: true });
       if (chunk) res.write(chunk);
     }
+
     const remaining = decoder.decode();
     if (remaining) res.write(remaining);
+
     res.end();
   } catch (e) {
     console.error("Stream forward failed:", e.message);
-    if (!res.headersSent) json(res, 502, { error: { message: "Stream forwarding failed", type: "proxy_error" } });
-    else res.destroy(e);
+
+    if (!res.headersSent) {
+      json(res, 502, {
+        error: {
+          message: "Stream forwarding failed",
+          type: "proxy_error",
+        },
+      });
+    } else {
+      res.destroy(e);
+    }
   }
 }
 
-// ==================== ОСНОВНОЙ СЕРВЕР ====================
+// ==================== MAIN SERVER ====================
 const server = http.createServer(async (req, res) => {
   // CORS
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-  res.setHeader("Access-Control-Expose-Headers", "x-request-id, x-proxy-name, x-cache-used-input-tokens, x-cache-creation-input-tokens");
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    "Content-Type, Authorization"
+  );
+  res.setHeader(
+    "Access-Control-Expose-Headers",
+    "x-request-id, x-proxy-name, x-cache-used-input-tokens, x-cache-creation-input-tokens"
+  );
   res.setHeader("Cache-Control", "no-store");
 
-  // OPTIONS Preflight
+  // OPTIONS
   if (req.method === "OPTIONS") {
     res.writeHead(204);
     return res.end();
   }
 
-  // Health check
-  if (req.method === "GET" && (req.url === "/" || req.url === "/health")) {
+  // HEALTH CHECK
+  if (
+    req.method === "GET" &&
+    (req.url === "/" || req.url === "/health")
+  ) {
     return json(res, 200, {
       ok: true,
       service: "janitor-gemini-bridge",
@@ -197,41 +246,81 @@ const server = http.createServer(async (req, res) => {
     });
   }
 
-  // /v1/models
+  // MODELS
   if (req.method === "GET" && req.url === "/v1/models") {
     try {
-      const upstream = await fetch(`${UPSTREAM_BASE_URL}/v1/models`, {
-        method: "GET",
-        headers: makeUpstreamHeaders(),
-        signal: AbortSignal.timeout(60_000),
-      });
+      const upstream = await fetch(
+        `${UPSTREAM_BASE_URL}/v1/models`,
+        {
+          method: "GET",
+          headers: makeUpstreamHeaders(),
+          signal: AbortSignal.timeout(60_000),
+        }
+      );
+
       return await forwardResponse(upstream, res);
     } catch (e) {
-      return json(res, 502, { error: { message: "Could not reach rout.my", type: "proxy_error" } });
+      return json(res, 502, {
+        error: {
+          message: "Could not reach rout.my",
+          type: "proxy_error",
+        },
+      });
     }
   }
 
-  // /v1/chat/completions
-  if (req.method === "POST" && req.url === "/v1/chat/completions") {
-    console.log(`Chat request from ${req.headers["x-forwarded-for"] || req.socket.remoteAddress}`);
+  // CHAT COMPLETIONS
+  if (
+    req.method === "POST" &&
+    req.url === "/v1/chat/completions"
+  ) {
+    console.log(
+      `Chat request from ${
+        req.headers["x-forwarded-for"] ||
+        req.socket.remoteAddress
+      }`
+    );
 
     let body;
+
     try {
       body = await readJsonBody(req);
     } catch (e) {
-      return json(res, e.status || 400, { error: { message: e.message || "Invalid request", type: "invalid_request_error" } });
+      return json(res, e.status || 400, {
+        error: {
+          message: e.message || "Invalid request",
+          type: "invalid_request_error",
+        },
+      });
     }
 
-    if (!body || typeof body !== "object" || Array.isArray(body)) {
-      return json(res, 400, { error: { message: "JSON body must be an object", type: "invalid_request_error" } });
+    if (
+      !body ||
+      typeof body !== "object" ||
+      Array.isArray(body)
+    ) {
+      return json(res, 400, {
+        error: {
+          message: "JSON body must be an object",
+          type: "invalid_request_error",
+        },
+      });
     }
 
-    if (body.model) body.model = normalizeModelName(body.model);
+    if (body.model) {
+      body.model = normalizeModelName(body.model);
+    }
 
-    // нормализация max_tokens / max_completion_tokens
-    if (Number.isInteger(body.max_completion_tokens) && body.max_completion_tokens > 0) {
+    // TOKEN NORMALIZATION
+    if (
+      Number.isInteger(body.max_completion_tokens) &&
+      body.max_completion_tokens > 0
+    ) {
       delete body.max_tokens;
-    } else if (Number.isInteger(body.max_tokens) && body.max_tokens > 0) {
+    } else if (
+      Number.isInteger(body.max_tokens) &&
+      body.max_tokens > 0
+    ) {
       body.max_completion_tokens = body.max_tokens;
       delete body.max_tokens;
     } else {
@@ -239,45 +328,66 @@ const server = http.createServer(async (req, res) => {
       delete body.max_completion_tokens;
     }
 
-    // ==================== БЕЗОПАСНЫЙ ОБХОД ЦЕНЗУРЫ ДЛЯ GEMINI ====================
+    // GEMINI SAFETY SETTINGS
+    // Verify rout.my support for these root-level fields.
     if (isGeminiModel(body.model)) {
-      // Если Janitor НЕ передал свои настройки, создаем дефолтные BLOCK_NONE
-      if (!body.safety_settings) {
-        body.safety_settings = [
-          { category: "HATE_SPEECH", threshold: "BLOCK_NONE" },
-          { category: "HARASSMENT", threshold: "BLOCK_NONE" },
-          { category: "SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
-          { category: "DANGEROUS_CONTENT", threshold: "BLOCK_NONE" },
-          { category: "CIVIC_INTEGRITY", threshold: "BLOCK_NONE" }
-        ];
+      if (
+        body.extra_body &&
+        typeof body.extra_body === "object"
+      ) {
+        delete body.extra_body.safety_settings;
       }
 
-      // Синхронизируем extra_body (подмешиваем safety_settings туда, если прокси требует этого формата)
-      if (body.extra_body && typeof body.extra_body === 'object') {
-        if (!body.extra_body.safety_settings) {
-          body.extra_body.safety_settings = body.safety_settings;
-        }
-      } else {
-        body.extra_body = { safety_settings: body.safety_settings };
-      }
+      body.safety_settings = [
+        {
+          category: "HATE_SPEECH",
+          threshold: "BLOCK_NONE",
+        },
+        {
+          category: "HARASSMENT",
+          threshold: "BLOCK_NONE",
+        },
+        {
+          category: "SEXUALLY_EXPLICIT",
+          threshold: "BLOCK_NONE",
+        },
+        {
+          category: "DANGEROUS_CONTENT",
+          threshold: "BLOCK_NONE",
+        },
+        {
+          category: "CIVIC_INTEGRITY",
+          threshold: "BLOCK_NONE",
+        },
+      ];
     }
 
-    // Кэширование + stream_options
+    // CACHING + STREAM OPTIONS
     addCachingSupport(body);
 
     if (body.stream === true && INCLUDE_STREAM_USAGE) {
-      body.stream_options = { ...(body.stream_options || {}), include_usage: true };
+      body.stream_options = {
+        ...(body.stream_options || {}),
+        include_usage: true,
+      };
     }
 
-    console.log(JSON.stringify({
-      event: "chat_request",
-      model: body.model || "unspecified",
-      model_type: isGeminiModel(body.model) ? "gemini" : isClaudeModel(body.model) ? "claude" : "other",
-      stream: body.stream === true,
-      caching_enabled: ENABLE_CACHING
-    }));
+    console.log(
+      JSON.stringify({
+        event: "chat_request",
+        model: body.model || "unspecified",
+        model_type: isGeminiModel(body.model)
+          ? "gemini"
+          : isClaudeModel(body.model)
+            ? "claude"
+            : "other",
+        stream: body.stream === true,
+        caching_enabled: ENABLE_CACHING,
+      })
+    );
 
-    const upstreamUrl = `${UPSTREAM_BASE_URL}/v1/chat/completions`;
+    const upstreamUrl =
+      `${UPSTREAM_BASE_URL}/v1/chat/completions`;
 
     try {
       const upstream = await fetch(upstreamUrl, {
@@ -287,34 +397,61 @@ const server = http.createServer(async (req, res) => {
         signal: AbortSignal.timeout(10 * 60_000),
       });
 
-      // ГЛУБОКОЕ ЛОГИРОВАНИЕ ПРИ ОШИБКЕ 400
-      if (upstream.status === 400) {
+      if (upstream.status >= 400) {
         const errorText = await upstream.text();
-        console.error("===== [!] КРИТИЧЕСКАЯ ОШИБКА 400 ОТ ROUT.MY =====");
-        console.error("Ответ от апстрима:", errorText);
-        console.error("Тот JSON, который мы им отправили:");
-        console.error(JSON.stringify(body, null, 2));
-        console.error("=================================================");
-        
-        res.statusCode = 400;
-        res.setHeader("Content-Type", "application/json");
+
+        console.error(
+          `===== UPSTREAM ERROR ${upstream.status} =====`
+        );
+        console.error("Upstream response:", errorText);
+        console.error(
+          "Request JSON:",
+          JSON.stringify(body, null, 2)
+        );
+        console.error("================================");
+
+        res.statusCode = upstream.status;
+        res.setHeader(
+          "Content-Type",
+          "application/json; charset=utf-8"
+        );
+
         return res.end(errorText);
       }
 
       if (body.stream === true) {
         return await forwardStreamResponse(upstream, res);
       }
+
       return await forwardResponse(upstream, res);
     } catch (e) {
-      console.error("Исключение при запросе к апстриму:", e.message);
-      return json(res, 502, { error: { message: "Could not reach rout.my", type: "proxy_error" } });
+      console.error(
+        "Upstream request exception:",
+        e.message
+      );
+
+      return json(res, 502, {
+        error: {
+          message: "Could not reach rout.my",
+          type: "proxy_error",
+        },
+      });
     }
   }
-  return json(res, 404, { error: { message: "Endpoint not found", type: "invalid_request_error" } });
+
+  // NOT FOUND
+  return json(res, 404, {
+    error: {
+      message: "Endpoint not found",
+      type: "invalid_request_error",
+    },
+  });
 });
 
 server.listen(PORT, "0.0.0.0", () => {
-  console.log(`✅ Server listening on port ${PORT}`);
+  console.log(`Server listening on port ${PORT}`);
   console.log(`API Base: ${UPSTREAM_BASE_URL}`);
-  console.log(`Caching: ${ENABLE_CACHING ? "enabled" : "disabled"}`);
+  console.log(
+    `Caching: ${ENABLE_CACHING ? "enabled" : "disabled"}`
+  );
 });
