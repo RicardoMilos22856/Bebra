@@ -6,7 +6,7 @@ const PORT = Number.parseInt(process.env.PORT || "3000", 10);
 
 const ROUTMY_API_KEY = process.env.ROUTMY_API_KEY;
 const UPSTREAM_BASE_URL = (
-  process.env.UPSTREAM_BASE_URL || "https://rout.my"
+  process.env.UPSTREAM_BASE_URL || "https://api.rout.my"
 ).replace(/\/+$/, "");
 
 const INCLUDE_STREAM_USAGE =
