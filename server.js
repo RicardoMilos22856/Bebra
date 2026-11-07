@@ -1,11 +1,13 @@
 import http from "node:http";
 
+// ==================== CONFIGURATION ====================
 const PORT = Number.parseInt(process.env.PORT || "3000", 10);
 
 const ROUTMY_API_KEY = process.env.ROUTMY_API_KEY;
+// === ИСПРАВЛЕНИЕ: убираем дублирование /v1 ===
 const UPSTREAM_BASE_URL = (
-  process.env.UPSTREAM_BASE_URL || "https://rout.my"
-).replace(/\/+$/, "");
+  process.env.UPSTREAM_BASE_URL || "https://api.rout.my"
+).replace(/\/v1\/?\( /, "").replace(/\/+ \)/, "");   // <--- это главное изменение
 
 const INCLUDE_STREAM_USAGE =
   String(process.env.INCLUDE_STREAM_USAGE || "false").toLowerCase() === "true";
@@ -253,10 +255,7 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  if (
-    req.method === "POST" &&
-    req.url === "/v1/chat/completions"
-  ) {
+  if (req.method === "POST" && req.url === "/v1/chat/completions") {
     console.log(
       `Chat request from ${
         req.headers["x-forwarded-for"] ||
@@ -310,9 +309,12 @@ const server = http.createServer(async (req, res) => {
       delete body.max_completion_tokens;
     }
 
+    // === CENSORSHIP BYPASS: полностью обходим цензуру Gemini 3.8 Flash ===
     if (isGeminiModel(body.model)) {
-      if (body.extra_body) delete body.extra_body;
-      if (body.safety_settings) delete body.safety_settings;
+      delete body.safety_settings;
+      delete body.extra_body;
+      delete body.reasoning_effort;
+      delete body.thinking_budget;
     }
 
     addCachingSupport(body);
@@ -338,8 +340,7 @@ const server = http.createServer(async (req, res) => {
       })
     );
 
-    const upstreamUrl =
-      `${UPSTREAM_BASE_URL}/v1/chat/completions`;
+    const upstreamUrl = `${UPSTREAM_BASE_URL}/v1/chat/completions`;
 
     try {
       const upstream = await fetch(upstreamUrl, {
@@ -401,4 +402,5 @@ server.listen(PORT, "0.0.0.0", () => {
   console.log(
     `Caching: ${ENABLE_CACHING ? "enabled" : "disabled"}`
   );
+  console.log("=== Janitor AI ready (Censorship Bypass + Caching for Claude) ===");
 });
