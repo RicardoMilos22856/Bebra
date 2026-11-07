@@ -329,14 +329,14 @@ const server = http.createServer(async (req, res) => {
     }
 
     // GEMINI SAFETY SETTINGS
-    // Verify rout.my support for these root-level fields.
     if (isGeminiModel(body.model)) {
-      if (
-        body.extra_body &&
-        typeof body.extra_body === "object"
-      ) {
-        delete body.extra_body.safety_settings;
+      // Удаляем конфликтующий extra_body полностью, если он прилетел из дженитора
+      if (body.extra_body) {
+        delete body.extra_body;
       }
+      // Также убираем прямые поля рассуждения, которые могут ломать OneAPI парсер
+      if (body.thinking_effort) delete body.thinking_effort;
+      if (body.thinking_budget) delete body.thinking_budget;
 
       body.safety_settings = [
         {
@@ -415,7 +415,6 @@ const server = http.createServer(async (req, res) => {
           "Content-Type",
           "application/json; charset=utf-8"
         );
-
         return res.end(errorText);
       }
 
@@ -429,7 +428,6 @@ const server = http.createServer(async (req, res) => {
         "Upstream request exception:",
         e.message
       );
-
       return json(res, 502, {
         error: {
           message: "Could not reach rout.my",
