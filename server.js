@@ -6,7 +6,7 @@ const PORT = Number.parseInt(process.env.PORT || "3000", 10);
 
 const ROUTMY_API_KEY = process.env.ROUTMY_API_KEY;
 const UPSTREAM_BASE_URL = (
-  process.env.UPSTREAM_BASE_URL || "https://rout.my"
+  process.env.UPSTREAM_BASE_URL || "https://api.rout.my"
 ).replace(/\/+$/, "");
 
 const INCLUDE_STREAM_USAGE =
@@ -81,11 +81,6 @@ function makeUpstreamHeaders() {
 
 function isGeminiModel(model) {
   return typeof model === "string" && model.toLowerCase().includes("gemini");
-}
-
-// Проверка на флэш-модели (включая экспериментальные 2.5/3.8)
-function isFlashModel(model) {
-  return typeof model === "string" && model.toLowerCase().includes("flash");
 }
 
 function isClaudeModel(model) {
@@ -246,7 +241,7 @@ const server = http.createServer(async (req, res) => {
 
     // ==================== БЕЗОПАСНЫЙ ОБХОД ЦЕНЗУРЫ ДЛЯ GEMINI ====================
     if (isGeminiModel(body.model)) {
-      // Задаем настройки BLOCK_NONE, только если дженитор сам их не прислал
+      // Если Janitor НЕ передал свои настройки, создаем дефолтные BLOCK_NONE
       if (!body.safety_settings) {
         body.safety_settings = [
           { category: "HATE_SPEECH", threshold: "BLOCK_NONE" },
@@ -257,7 +252,7 @@ const server = http.createServer(async (req, res) => {
         ];
       }
 
-      // Настройка extra_body под OpenAI формат rout.my
+      // Синхронизируем extra_body (подмешиваем safety_settings туда, если прокси требует этого формата)
       if (body.extra_body && typeof body.extra_body === 'object') {
         if (!body.extra_body.safety_settings) {
           body.extra_body.safety_settings = body.safety_settings;
@@ -293,7 +288,6 @@ const server = http.createServer(async (req, res) => {
         console.error(JSON.stringify(body, null, 2));
         console.error("=================================================");
         
-        // Возвращаем ошибку клиенту обратно
         res.statusCode = 400;
         res.setHeader("Content-Type", "application/json");
         return res.end(errorText);
@@ -305,3 +299,14 @@ const server = http.createServer(async (req, res) => {
       return await forwardResponse(upstream, res);
     } catch (e) {
       console.error("Исключение при запросе к апстриму:", e.message);
+      return json(res, 502, { error: { message: "Could not reach rout.my", type: "proxy_error" } });
+    }
+  }
+
+  return json(res, 404, { error: { message: "Endpoint not found", type: "invalid_request_error" } });
+});
+server.listen(PORT, "0.0.0.0", () => {
+console.log(✅ Server listening on port ${PORT});
+console.log(API Base: ${UPSTREAM_BASE_URL});
+console.log(Caching: ${ENABLE_CACHING ? "enabled" : "disabled"});
+});
