@@ -19,6 +19,14 @@ const MAX_BODY_BYTES = Number(
   process.env.MAX_BODY_BYTES || 20 * 1024 * 1024
 );
 
+// Настройки безопасности Gemini: имена категорий должны иметь префикс HARM_CATEGORY_
+const GEMINI_SAFETY_SETTINGS = [
+  { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
+  { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
+  { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
+  { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" },
+];
+
 // ==================== ВАЛИДАЦИЯ ====================
 if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) {
   console.error("Invalid PORT");
@@ -36,16 +44,6 @@ console.log("UPSTREAM_BASE_URL:", UPSTREAM_BASE_URL);
 console.log("ENABLE_CACHING:", ENABLE_CACHING);
 console.log("INCLUDE_STREAM_USAGE:", INCLUDE_STREAM_USAGE);
 console.log("ROUTMY_API_KEY: configured");
-
-// ==================== НАСТРОЙКИ БЕЗОПАСНОСТИ GEMINI ====================
-// Gemini API требует полные имена категорий с префиксом HARM_CATEGORY_
-const GEMINI_SAFETY_SETTINGS = [
-  { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
-  { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
-  { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
-  { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" },
-  { category: "HARM_CATEGORY_CIVIC_INTEGRITY", threshold: "BLOCK_NONE" },
-];
 
 // ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
 function json(res, status, payload) {
@@ -113,7 +111,7 @@ function normalizeModelName(model) {
   return model;
 }
 
-// ==================== КЭШИРОВАНИЕ (только Claude) ====================
+// ==================== КЭШИНГ (только Claude) ====================
 function addCachingSupport(body) {
   if (!ENABLE_CACHING) return;
   if (isClaudeModel(body.model)) {
@@ -253,7 +251,7 @@ const server = http.createServer(async (req, res) => {
 
     if (body.model) body.model = normalizeModelName(body.model);
 
-    // Нормализация max_tokens / max_completion_tokens
+    // Нормализация max_tokens → max_completion_tokens
     if (Number.isInteger(body.max_completion_tokens) && body.max_completion_tokens > 0) {
       delete body.max_tokens;
     } else if (Number.isInteger(body.max_tokens) && body.max_tokens > 0) {
@@ -264,9 +262,12 @@ const server = http.createServer(async (req, res) => {
       delete body.max_completion_tokens;
     }
 
-    // Настройки безопасности только для Gemini (один раз, в корне запроса)
+    // Настройки безопасности Gemini передаются только в extra_body
     if (isGeminiModel(body.model)) {
-      body.safety_settings = GEMINI_SAFETY_SETTINGS;
+      body.extra_body = {
+        ...(body.extra_body || {}),
+        safety_settings: GEMINI_SAFETY_SETTINGS,
+      };
     }
 
     // Кэширование и stream_options
@@ -294,18 +295,11 @@ const server = http.createServer(async (req, res) => {
         signal: AbortSignal.timeout(10 * 60_000),
       });
 
-      // Для отладки: если апстрим вернул ошибку, выводим его тело в лог
-      if (!upstream.ok) {
-        const errText = await upstream.clone().text();
-        console.error(`Upstream ${upstream.status}:`, errText);
-      }
-
       if (body.stream === true) {
         return await forwardStreamResponse(upstream, res);
       }
       return await forwardResponse(upstream, res);
     } catch (e) {
-      console.error("Upstream request failed:", e.message);
       return json(res, 502, { error: { message: "Could not reach rout.my", type: "proxy_error" } });
     }
   }
