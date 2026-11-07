@@ -228,7 +228,7 @@ const server = http.createServer(async (req, res) => {
 
     if (body.model) body.model = normalizeModelName(body.model);
 
-    // Нормализация токенов
+    // нормализация max_tokens / max_completion_tokens
     if (Number.isInteger(body.max_completion_tokens) && body.max_completion_tokens > 0) {
       delete body.max_tokens;
     } else if (Number.isInteger(body.max_tokens) && body.max_tokens > 0) {
@@ -269,6 +269,14 @@ const server = http.createServer(async (req, res) => {
       body.stream_options = { ...(body.stream_options || {}), include_usage: true };
     }
 
+    console.log(JSON.stringify({
+      event: "chat_request",
+      model: body.model || "unspecified",
+      model_type: isGeminiModel(body.model) ? "gemini" : isClaudeModel(body.model) ? "claude" : "other",
+      stream: body.stream === true,
+      caching_enabled: ENABLE_CACHING
+    }));
+
     const upstreamUrl = `${UPSTREAM_BASE_URL}/v1/chat/completions`;
 
     try {
@@ -279,12 +287,12 @@ const server = http.createServer(async (req, res) => {
         signal: AbortSignal.timeout(10 * 60_000),
       });
 
-      // ГЛУБОКОЕ ЛОГИРОВАНИЕ ПРИ ОШИБКЕ 400 BAD REQUEST
+      // ГЛУБОКОЕ ЛОГИРОВАНИЕ ПРИ ОШИБКЕ 400
       if (upstream.status === 400) {
         const errorText = await upstream.text();
         console.error("===== [!] КРИТИЧЕСКАЯ ОШИБКА 400 ОТ ROUT.MY =====");
-        console.error("Ответ от rout.my:", errorText);
-        console.error("Тот JSON-запрос, который мы им отправили:");
+        console.error("Ответ от апстрима:", errorText);
+        console.error("Тот JSON, который мы им отправили:");
         console.error(JSON.stringify(body, null, 2));
         console.error("=================================================");
         
@@ -302,11 +310,11 @@ const server = http.createServer(async (req, res) => {
       return json(res, 502, { error: { message: "Could not reach rout.my", type: "proxy_error" } });
     }
   }
-
   return json(res, 404, { error: { message: "Endpoint not found", type: "invalid_request_error" } });
 });
+
 server.listen(PORT, "0.0.0.0", () => {
-console.log(✅ Server listening on port ${PORT});
-console.log(API Base: ${UPSTREAM_BASE_URL});
-console.log(Caching: ${ENABLE_CACHING ? "enabled" : "disabled"});
+  console.log(`✅ Server listening on port ${PORT}`);
+  console.log(`API Base: ${UPSTREAM_BASE_URL}`);
+  console.log(`Caching: ${ENABLE_CACHING ? "enabled" : "disabled"}`);
 });
