@@ -1,12 +1,10 @@
-
 import http from "node:http";
 
-// ==================== CONFIGURATION ====================
 const PORT = Number.parseInt(process.env.PORT || "3000", 10);
 
 const ROUTMY_API_KEY = process.env.ROUTMY_API_KEY;
 const UPSTREAM_BASE_URL = (
-  process.env.UPSTREAM_BASE_URL || "https://api.rout.my"
+  process.env.UPSTREAM_BASE_URL || "https://rout.my"
 ).replace(/\/+$/, "");
 
 const INCLUDE_STREAM_USAGE =
@@ -19,7 +17,6 @@ const MAX_BODY_BYTES = Number(
   process.env.MAX_BODY_BYTES || 20 * 1024 * 1024
 );
 
-// ==================== VALIDATION ====================
 if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) {
   console.error("Invalid PORT");
   process.exit(1);
@@ -37,7 +34,6 @@ console.log("ENABLE_CACHING:", ENABLE_CACHING);
 console.log("INCLUDE_STREAM_USAGE:", INCLUDE_STREAM_USAGE);
 console.log("ROUTMY_API_KEY: configured");
 
-// ==================== HELPERS ====================
 function json(res, status, payload) {
   const body = JSON.stringify(payload);
   res.writeHead(status, {
@@ -82,13 +78,11 @@ function makeUpstreamHeaders() {
 }
 
 function isGeminiModel(model) {
-  return typeof model === "string" &&
-    model.toLowerCase().includes("gemini");
+  return typeof model === "string" && model.toLowerCase().includes("gemini");
 }
 
 function isClaudeModel(model) {
-  return typeof model === "string" &&
-    model.toLowerCase().includes("claude");
+  return typeof model === "string" && model.toLowerCase().includes("claude");
 }
 
 function normalizeModelName(model) {
@@ -107,7 +101,6 @@ function normalizeModelName(model) {
   return model;
 }
 
-// ==================== CACHING ====================
 function addCachingSupport(body) {
   if (!ENABLE_CACHING) return;
 
@@ -116,7 +109,6 @@ function addCachingSupport(body) {
   }
 }
 
-// ==================== RESPONSE FORWARDING ====================
 function cleanUpstreamHeaders(upstream, res) {
   const allowed = [
     "content-type",
@@ -213,9 +205,7 @@ async function forwardStreamResponse(upstream, res) {
   }
 }
 
-// ==================== MAIN SERVER ====================
 const server = http.createServer(async (req, res) => {
-  // CORS
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.setHeader(
@@ -228,17 +218,12 @@ const server = http.createServer(async (req, res) => {
   );
   res.setHeader("Cache-Control", "no-store");
 
-  // OPTIONS
   if (req.method === "OPTIONS") {
     res.writeHead(204);
     return res.end();
   }
 
-  // HEALTH CHECK
-  if (
-    req.method === "GET" &&
-    (req.url === "/" || req.url === "/health")
-  ) {
+  if (req.method === "GET" && (req.url === "/" || req.url === "/health")) {
     return json(res, 200, {
       ok: true,
       service: "janitor-gemini-bridge",
@@ -246,7 +231,6 @@ const server = http.createServer(async (req, res) => {
     });
   }
 
-  // MODELS
   if (req.method === "GET" && req.url === "/v1/models") {
     try {
       const upstream = await fetch(
@@ -269,7 +253,6 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  // CHAT COMPLETIONS
   if (
     req.method === "POST" &&
     req.url === "/v1/chat/completions"
@@ -311,7 +294,6 @@ const server = http.createServer(async (req, res) => {
       body.model = normalizeModelName(body.model);
     }
 
-    // TOKEN NORMALIZATION
     if (
       Number.isInteger(body.max_completion_tokens) &&
       body.max_completion_tokens > 0
@@ -328,41 +310,11 @@ const server = http.createServer(async (req, res) => {
       delete body.max_completion_tokens;
     }
 
-    // GEMINI SAFETY SETTINGS
     if (isGeminiModel(body.model)) {
-      // Удаляем конфликтующий extra_body полностью, если он прилетел из дженитора
-      if (body.extra_body) {
-        delete body.extra_body;
-      }
-      // Также убираем прямые поля рассуждения, которые могут ломать OneAPI парсер
-      if (body.thinking_effort) delete body.thinking_effort;
-      if (body.thinking_budget) delete body.thinking_budget;
-
-      body.safety_settings = [
-        {
-          category: "HATE_SPEECH",
-          threshold: "BLOCK_NONE",
-        },
-        {
-          category: "HARASSMENT",
-          threshold: "BLOCK_NONE",
-        },
-        {
-          category: "SEXUALLY_EXPLICIT",
-          threshold: "BLOCK_NONE",
-        },
-        {
-          category: "DANGEROUS_CONTENT",
-          threshold: "BLOCK_NONE",
-        },
-        {
-          category: "CIVIC_INTEGRITY",
-          threshold: "BLOCK_NONE",
-        },
-      ];
+      if (body.extra_body) delete body.extra_body;
+      if (body.safety_settings) delete body.safety_settings;
     }
 
-    // CACHING + STREAM OPTIONS
     addCachingSupport(body);
 
     if (body.stream === true && INCLUDE_STREAM_USAGE) {
@@ -415,6 +367,7 @@ const server = http.createServer(async (req, res) => {
           "Content-Type",
           "application/json; charset=utf-8"
         );
+
         return res.end(errorText);
       }
 
@@ -424,10 +377,7 @@ const server = http.createServer(async (req, res) => {
 
       return await forwardResponse(upstream, res);
     } catch (e) {
-      console.error(
-        "Upstream request exception:",
-        e.message
-      );
+      console.error("Upstream request exception:", e.message);
       return json(res, 502, {
         error: {
           message: "Could not reach rout.my",
@@ -437,7 +387,6 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  // NOT FOUND
   return json(res, 404, {
     error: {
       message: "Endpoint not found",
