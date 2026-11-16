@@ -81,7 +81,7 @@ function normalizeModelName(model) {
   return model;
 }
 
-// ==================== КЭШИНГ (только Claude) ====================
+// ==================== КЭШИНГ ====================
 function addCachingSupport(body) {
   if (!ENABLE_CACHING) return;
   if (isClaudeModel(body.model)) {
@@ -89,79 +89,8 @@ function addCachingSupport(body) {
   }
 }
 
-// ==================== ФОРВАРДИНГ ====================
-function cleanUpstreamHeaders(upstream, res) {
-  const allowed = [
-    "content-type", "x-request-id", "retry-after", "x-ratelimit-limit",
-    "x-ratelimit-remaining", "x-ratelimit-reset", "x-context-limit",
-    "x-context-original-tokens", "x-cache-used-input-tokens", "x-cache-creation-input-tokens",
-  ];
-
-  for (const name of allowed) {
-    const value = upstream.headers.get(name);
-    if (value) res.setHeader(name, value);
-  }
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Cache-Control", "no-store");
-}
-
-async function forwardResponse(upstream, res) {
-  res.statusCode = upstream.status;
-  cleanUpstreamHeaders(upstream, res);
-
-  if (!upstream.body) return res.end();
-
-  const reader = upstream.body.getReader();
-  try {
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      if (!res.write(Buffer.from(value))) {
-        await new Promise((resolve) => res.once("drain", resolve));
-      }
-    }
-    res.end();
-  } catch (e) {
-    console.error("Forward failed:", e.message);
-    if (!res.headersSent) {
-      json(res, 502, { error: { message: "Response forwarding failed", type: "proxy_error" } });
-    } else {
-      res.destroy(e);
-    }
-  }
-}
-
-async function forwardStreamResponse(upstream, res) {
-  res.statusCode = upstream.status;
-  cleanUpstreamHeaders(upstream, res);
-
-  if (!upstream.body) return res.end();
-
-  const reader = upstream.body.getReader();
-  const decoder = new TextDecoder();
-  try {
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      const chunk = decoder.decode(value, { stream: true });
-      if (chunk) res.write(chunk);
-    }
-    const remaining = decoder.decode();
-    if (remaining) res.write(remaining);
-    res.end();
-  } catch (e) {
-    console.error("Stream forward failed:", e.message);
-    if (!res.headersSent) {
-      json(res, 502, { error: { message: "Stream forwarding failed", type: "proxy_error" } });
-    } else {
-      res.destroy(e);
-    }
-  }
-}
-
-// ==================== ОСНОВНОЙ СЕРВЕР ====================
+// ==================== ОСНОВНОЙ СЕРВЕР (правильный) ====================
 const server = http.createServer(async (req, res) => {
-  // CORS
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
@@ -179,7 +108,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "GET" && (req.url === "/" || req.url === "/health")) {
     return json(res, 200, {
       ok: true,
-      service: "janitor-gemini-bridge",
+      service: "janitor-routmy-bridge",
       caching_enabled: ENABLE_CACHING,
     });
   }
@@ -217,7 +146,7 @@ const server = http.createServer(async (req, res) => {
 
     if (body.model) body.model = normalizeModelName(body.model);
 
-    // ==================== БЕЗОПАСНОСТЬ (оставляем как ты хотел) ====================
+    // ==================== БЕЗОПАСНОСТЬ (5 категорий OFF) ====================
     if (isGeminiModel(body.model)) {
       body.extra_body = {
         ...(body.extra_body || {}),
