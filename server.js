@@ -19,9 +19,9 @@ const MAX_BODY_BYTES = Number(
   process.env.MAX_BODY_BYTES || 20 * 1024 * 1024
 );
 
-// ==================== НОРМАЛИЗАЦИЯ MAX TOKENS ====================
+// ==================== НОРМАЛИЗАЦИЯ ТОКЕНОВ ====================
 function normalizeTokenLimit(body) {
-  const rawValue = body.max_tokens ?? body.max_completion_tokens;
+  const rawValue = body.max_completion_tokens ?? body.max_tokens;
 
   if (rawValue === undefined || rawValue === null) {
     return;
@@ -33,8 +33,9 @@ function normalizeTokenLimit(body) {
     return;
   }
 
+  // Дублируем и то, и то на всякий случай, чтобы провайдер точно подхватил
   body.max_completion_tokens = limit;
-  delete body.max_tokens;
+  body.max_tokens = limit;
 }
 
 // ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
@@ -241,10 +242,10 @@ const server = http.createServer(async (req, res) => {
 
     if (body.model) body.model = normalizeModelName(body.model);
 
-    // Нормализация лимита токенов
+    // Нормализация токенов
     normalizeTokenLimit(body);
 
-    // Настройки безопасности Gemini
+    // Безопасность Gemini через extra_body (как работало изначально)
     if (isGeminiModel(body.model)) {
       body.extra_body = {
         ...(body.extra_body || {}),
@@ -275,7 +276,6 @@ const server = http.createServer(async (req, res) => {
         signal: AbortSignal.timeout(10 * 60_000),
       });
 
-      // Логируем только ошибки апстрима, если они возникают
       if (!upstream.ok) {
         const errorText = await upstream.clone().text();
         console.error(`[ROUTMY ERROR] Status ${upstream.status}:`, errorText);
