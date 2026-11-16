@@ -275,6 +275,11 @@ const server = http.createServer(async (req, res) => {
     try {
       // ОТЛАДКА: вывести тело запроса, которое уходит в rout.my (без ключа)
 console.log("[OUTGOING BODY]", JSON.stringify(body, null, 2));
+      console.log("[ROUTMY FINAL TOKEN FIELDS]", {
+  max_tokens: body.max_tokens,
+  max_completion_tokens: body.max_completion_tokens,
+  max_output_tokens: body.max_output_tokens
+});
 
       const upstream = await fetch(upstreamUrl, {
         method: "POST",
