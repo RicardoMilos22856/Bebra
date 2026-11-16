@@ -64,11 +64,6 @@ async function readJsonBody(req) {
 
   const rawString = Buffer.concat(chunks).toString("utf8");
 
-  // ЛОГИРУЕМ СЫРУЮ СТРОКУ ДО ПАРСИНГА
-  console.log("========== RAW CLIENT REQUEST STRING ==========");
-  console.log(rawString);
-  console.log("===============================================");
-
   try {
     return JSON.parse(rawString);
   } catch {
@@ -230,7 +225,13 @@ const server = http.createServer(async (req, res) => {
   }
 
   // /v1/chat/completions
-  if (req.method === "POST" && req.url === "/v1/chat/completions") {
+  if (req.method === "POST" && req.url.startsWith("/v1/chat/completions")) {
+    // 1. Дамп URL и заголовков от Janitor AI
+    console.log("========== FULL REQUEST DUMP ==========");
+    console.log("URL:", req.url);
+    console.log("HEADERS:", JSON.stringify(req.headers, null, 2));
+    console.log("=======================================");
+
     let body;
     try {
       body = await readJsonBody(req);
@@ -271,6 +272,12 @@ const server = http.createServer(async (req, res) => {
     if (body.stream === true && INCLUDE_STREAM_USAGE) {
       body.stream_options = { ...(body.stream_options || {}), include_usage: true };
     }
+
+    // 2. Логируем итоговый объект (без массива сообщений, чтобы не засорять консоль)
+    const { messages, ...debugOut } = body;
+    console.log("========== OUTGOING TO ROUT.MY ==========");
+    console.log(JSON.stringify(debugOut, null, 2));
+    console.log("=========================================");
 
     const upstreamUrl = `${UPSTREAM_BASE_URL}/v1/chat/completions`;
 
