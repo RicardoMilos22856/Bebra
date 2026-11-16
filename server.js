@@ -62,8 +62,15 @@ async function readJsonBody(req) {
     chunks.push(chunk);
   }
 
+  const rawString = Buffer.concat(chunks).toString("utf8");
+
+  // ЛОГИРУЕМ СЫРУЮ СТРОКУ ДО ПАРСИНГА
+  console.log("========== RAW CLIENT REQUEST STRING ==========");
+  console.log(rawString);
+  console.log("===============================================");
+
   try {
-    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    return JSON.parse(rawString);
   } catch {
     const error = new Error("Request body must be valid JSON");
     error.status = 400;
@@ -241,7 +248,7 @@ const server = http.createServer(async (req, res) => {
 
     if (body.model) body.model = normalizeModelName(body.model);
 
-    // Нормализация токенов (если клиент прислал — преобразуем, если нет — оставляем как есть)
+    // Нормализация токенов
     normalizeTokenLimit(body);
 
     // Настройки безопасности Gemini
