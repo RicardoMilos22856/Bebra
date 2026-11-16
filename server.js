@@ -19,32 +19,6 @@ const MAX_BODY_BYTES = Number(
   process.env.MAX_BODY_BYTES || 20 * 1024 * 1024
 );
 
-// Настройки безопасности Gemini: имена категорий должны иметь префикс HARM_CATEGORY_
-const GEMINI_SAFETY_SETTINGS = [
-  { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
-  { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
-  { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
-  { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" },
-];
-
-// ==================== ВАЛИДАЦИЯ ====================
-if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) {
-  console.error("Invalid PORT");
-  process.exit(1);
-}
-
-if (!ROUTMY_API_KEY) {
-  console.error("Missing ROUTMY_API_KEY environment variable.");
-  process.exit(1);
-}
-
-console.log("Starting Janitor AI → Gemini Bridge");
-console.log("PORT:", PORT);
-console.log("UPSTREAM_BASE_URL:", UPSTREAM_BASE_URL);
-console.log("ENABLE_CACHING:", ENABLE_CACHING);
-console.log("INCLUDE_STREAM_USAGE:", INCLUDE_STREAM_USAGE);
-console.log("ROUTMY_API_KEY: configured");
-
 // ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
 function json(res, status, payload) {
   const body = JSON.stringify(payload);
@@ -111,7 +85,7 @@ function normalizeModelName(model) {
   return model;
 }
 
-// ==================== КЭШИНГ (только Claude) ====================
+// ==================== КЭШИНГ ====================
 function addCachingSupport(body) {
   if (!ENABLE_CACHING) return;
   if (isClaudeModel(body.model)) {
@@ -119,7 +93,7 @@ function addCachingSupport(body) {
   }
 }
 
-// ==================== НОРМАЛИЗАЦИЯ MAX TOKENS (только для Gemini) ====================
+// ==================== НОРМАЛИЗАЦИЯ MAX TOKENS ====================
 function normalizeTokenLimit(body) {
   const rawValue =
     body.max_tokens ??
@@ -136,9 +110,13 @@ function normalizeTokenLimit(body) {
     return;
   }
 
-  // Для Gemini передаём через max_completion_tokens (как требует Janitor)
-  body.max_completion_tokens = limit;
-  delete body.max_tokens;
+  // Приоритет: если есть max_tokens — отдаём его (как у Janitor)
+  if (body.max_tokens !== undefined) {
+    body.max_completion_tokens = limit;
+    delete body.max_tokens;
+  } else {
+    body.max_completion_tokens = limit;
+  }
 
   console.log("[TOKEN LIMIT]", {
     received: rawValue,
@@ -228,7 +206,6 @@ const server = http.createServer(async (req, res) => {
   );
   res.setHeader("Cache-Control", "no-store");
 
-  // OPTIONS preflight
   if (req.method === "OPTIONS") {
     res.writeHead(204);
     return res.end();
@@ -278,18 +255,24 @@ const server = http.createServer(async (req, res) => {
 
     if (body.model) body.model = normalizeModelName(body.model);
 
-    // ==================== ИСПРАВЛЕННАЯ НОРМАЛИЗАЦИЯ МАКС ТОКЕНОВ ====================
+    // ==================== НОРМАЛИЗАЦИЯ МАКС ТОКЕНОВ (исправлена) ====================
     normalizeTokenLimit(body);
 
-    // Настройки безопасности Gemini передаются только в extra_body
+    // Настройки безопасности (5 категорий с OFF)
     if (isGeminiModel(body.model)) {
       body.extra_body = {
         ...(body.extra_body || {}),
-        safety_settings: GEMINI_SAFETY_SETTINGS,
+        safety_settings: [
+          { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "OFF" },
+          { category: "HARM_CATEGORY_HARASSMENT", threshold: "OFF" },
+          { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "OFF" },
+          { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "OFF" },
+          { category: "HARM_CATEGORY_CIVIC_INTEGRITY", threshold: "OFF" },
+        ],
       };
     }
 
-    // Кэширование и stream_options
+    // Кэширование
     addCachingSupport(body);
 
     if (body.stream === true && INCLUDE_STREAM_USAGE) {
