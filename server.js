@@ -19,32 +19,31 @@ const MAX_BODY_BYTES = Number(
   process.env.MAX_BODY_BYTES || 20 * 1024 * 1024
 );
 
-// Настройки безопасности Gemini: все категории отключены
-const GEMINI_SAFETY_SETTINGS = [
-  { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "OFF" },
-  { category: "HARM_CATEGORY_HARASSMENT", threshold: "OFF" },
-  { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "OFF" },
-  { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "OFF" },
-  { category: "HARM_CATEGORY_CIVIC_INTEGRITY", threshold: "OFF" },
-];
+// ==================== НОРМАЛИЗАЦИЯ MAX TOKENS (только для Gemini) ====================
+function normalizeTokenLimit(body) {
+  const rawValue =
+    body.max_tokens ??
+    body.max_completion_tokens;
 
-// ==================== ВАЛИДАЦИЯ ====================
-if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) {
-  console.error("Invalid PORT");
-  process.exit(1);
+  if (rawValue === undefined || rawValue === null) {
+    return;
+  }
+
+  const limit = Number(rawValue);
+
+  if (!Number.isSafeInteger(limit) || limit <= 0) {
+    console.log("[TOKEN LIMIT] Invalid value:", rawValue);
+    return;
+  }
+
+  body.max_completion_tokens = limit;
+  delete body.max_tokens;
+
+  console.log("[TOKEN LIMIT]", {
+    received: rawValue,
+    sent: limit
+  });
 }
-
-if (!ROUTMY_API_KEY) {
-  console.error("Missing ROUTMY_API_KEY environment variable.");
-  process.exit(1);
-}
-
-console.log("Starting Janitor AI → Gemini Bridge");
-console.log("PORT:", PORT);
-console.log("UPSTREAM_BASE_URL:", UPSTREAM_BASE_URL);
-console.log("ENABLE_CACHING:", ENABLE_CACHING);
-console.log("INCLUDE_STREAM_USAGE:", INCLUDE_STREAM_USAGE);
-console.log("ROUTMY_API_KEY: configured");
 
 // ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
 function json(res, status, payload) {
@@ -118,32 +117,6 @@ function addCachingSupport(body) {
   if (isClaudeModel(body.model)) {
     body.smart_cache = true;
   }
-}
-
-// ==================== НОРМАЛИЗАЦИЯ MAX TOKENS ====================
-function normalizeTokenLimit(body) {
-  const rawValue = body.max_tokens ?? body.max_completion_tokens;
-
-  // Всегда удаляем max_tokens, чтобы не отправлять оба параметра
-  delete body.max_tokens;
-
-  if (rawValue === undefined || rawValue === null) {
-    return;
-  }
-
-  const limit = Number(rawValue);
-
-  if (!Number.isSafeInteger(limit) || limit <= 0) {
-    console.log("[TOKEN LIMIT] Invalid value:", rawValue);
-    return;
-  }
-
-  body.max_completion_tokens = limit;
-
-  console.log("[TOKEN LIMIT]", {
-    received: rawValue,
-    sent: limit,
-  });
 }
 
 // ==================== ФОРВАРДИНГ ====================
@@ -278,13 +251,20 @@ const server = http.createServer(async (req, res) => {
 
     if (body.model) body.model = normalizeModelName(body.model);
 
+    // ==================== ИСПРАВЛЕННАЯ НОРМАЛИЗАЦИЯ МАКС ТОКЕНОВ ====================
     normalizeTokenLimit(body);
 
     // Настройки безопасности Gemini передаются только в extra_body
     if (isGeminiModel(body.model)) {
       body.extra_body = {
         ...(body.extra_body || {}),
-        safety_settings: GEMINI_SAFETY_SETTINGS,
+        safety_settings: [
+          { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "OFF" },
+          { category: "HARM_CATEGORY_HARASSMENT", threshold: "OFF" },
+          { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "OFF" },
+          { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "OFF" },
+          { category: "HARM_CATEGORY_CIVIC_INTEGRITY", threshold: "OFF" },
+        ],
       };
     }
 
