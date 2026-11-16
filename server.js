@@ -19,35 +19,30 @@ const MAX_BODY_BYTES = Number(
   process.env.MAX_BODY_BYTES || 20 * 1024 * 1024
 );
 
-// ==================== НОРМАЛИЗАЦИЯ MAX TOKENS (с отладкой) ====================
+// ==================== НОРМАЛИЗАЦИЯ MAX TOKENS ====================
 function normalizeTokenLimit(body) {
-  console.log("========== TOKEN DEBUG ==========");
-  console.log("Model:", body.model);
-  console.log("Received max_tokens:", body.max_tokens);
-  console.log("Received max_completion_tokens:", body.max_completion_tokens);
+  // Логируем все возможные поля, которые могут отвечать за токены
+  console.log("========== TOKEN INSPECTION ==========");
+  console.log("body.max_tokens:", body.max_tokens);
+  console.log("body.max_completion_tokens:", body.max_completion_tokens);
+  console.log("body.tokens:", body.tokens); // на всякий случай проверяем альтернативы
+  console.log("======================================");
 
-  const rawValue = body.max_tokens ?? body.max_completion_tokens;
+  const rawValue = body.max_tokens ?? body.max_completion_tokens ?? body.tokens;
 
   if (rawValue === undefined || rawValue === null) {
-    console.log("[TOKEN LIMIT] Janitor AI не прислал лимит токенов (используется дефолт провайдера)");
-    console.log("=================================");
     return;
   }
 
   const limit = Number(rawValue);
 
   if (!Number.isSafeInteger(limit) || limit <= 0) {
-    console.log("[TOKEN LIMIT] Получено невалидное значение:", rawValue);
-    console.log("=================================");
     return;
   }
 
-  // Rout.my поддерживает max_completion_tokens (согласно их доке)
   body.max_completion_tokens = limit;
   delete body.max_tokens;
-
-  console.log("[TOKEN LIMIT] Успешно установлено max_completion_tokens:", limit);
-  console.log("=================================");
+  delete body.tokens;
 }
 
 // ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
@@ -237,8 +232,6 @@ const server = http.createServer(async (req, res) => {
 
   // /v1/chat/completions
   if (req.method === "POST" && req.url === "/v1/chat/completions") {
-    console.log(`Chat request from ${req.headers["x-forwarded-for"] || req.socket.remoteAddress}`);
-
     let body;
     try {
       body = await readJsonBody(req);
@@ -254,12 +247,16 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
+    // === ЛОГИРУЕМ ВСЕ ПОЛЯ, КОТОРЫЕ ПРИШЛИ ОТ JANITOR AI ===
+    console.log("========== FULL REQUEST BODY FROM CLIENT ==========");
+    console.log(JSON.stringify(body, null, 2));
+    console.log("===================================================");
+
     if (body.model) body.model = normalizeModelName(body.model);
 
-    // Нормализация токенов с отладкой
     normalizeTokenLimit(body);
 
-    // Настройки безопасности Gemini передаются только в extra_body
+    // Настройки безопасности Gemini передаются в extra_body
     if (isGeminiModel(body.model)) {
       body.extra_body = {
         ...(body.extra_body || {}),
@@ -280,14 +277,6 @@ const server = http.createServer(async (req, res) => {
       body.stream_options = { ...(body.stream_options || {}), include_usage: true };
     }
 
-    console.log(JSON.stringify({
-      event: "chat_request",
-      model: body.model || "unspecified",
-      model_type: isGeminiModel(body.model) ? "gemini" : isClaudeModel(body.model) ? "claude" : "other",
-      stream: body.stream === true,
-      caching_enabled: ENABLE_CACHING,
-    }));
-
     const upstreamUrl = `${UPSTREAM_BASE_URL}/v1/chat/completions`;
 
     try {
@@ -298,7 +287,6 @@ const server = http.createServer(async (req, res) => {
         signal: AbortSignal.timeout(10 * 60_000),
       });
 
-      // Логируем ошибку, если Rout.my завернул запрос
       if (!upstream.ok) {
         const errorText = await upstream.clone().text();
         console.error(`[ROUTMY ERROR] Status ${upstream.status}:`, errorText);
