@@ -33,7 +33,6 @@ function normalizeTokenLimit(body) {
     return;
   }
 
-  // Дублируем и то, и то на всякий случай, чтобы провайдер точно подхватил
   body.max_completion_tokens = limit;
   body.max_tokens = limit;
 }
@@ -245,7 +244,7 @@ const server = http.createServer(async (req, res) => {
     // Нормализация токенов
     normalizeTokenLimit(body);
 
-    // Безопасность Gemini через extra_body (как работало изначально)
+    // Настройки безопасности Gemini
     if (isGeminiModel(body.model)) {
       body.extra_body = {
         ...(body.extra_body || {}),
@@ -276,9 +275,18 @@ const server = http.createServer(async (req, res) => {
         signal: AbortSignal.timeout(10 * 60_000),
       });
 
+      // РАСШИРЕННЫЙ ЛОГ ОШИБКИ АПСТРИМА
       if (!upstream.ok) {
-        const errorText = await upstream.clone().text();
-        console.error(`[ROUTMY ERROR] Status ${upstream.status}:`, errorText);
+        const errorText = await upstream.text();
+        console.error(`🚨 [ROUTMY ERROR] Status ${upstream.status} | Response:`, errorText);
+        
+        // Передаем точный текст ошибки обратно клиенту, чтобы видеть его в UI/консоли
+        return json(res, upstream.status, {
+          error: {
+            message: `Rout.my upstream error: ${errorText}`,
+            type: "upstream_error"
+          }
+        });
       }
 
       if (body.stream === true) {
