@@ -252,8 +252,16 @@ const server = http.createServer(async (req, res) => {
     // Нормализация токенов (для Gemini не меняется)
     normalizeTokenLimit(body);
 
-    // УБРАЛИ extra_body полностью
-    delete body.extra_body;
+    // Возвращаем extra_body (с новым уровнем безопасности)
+    body.extra_body = {
+      ...(body.extra_body || {}),
+      safety_settings: [
+        { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
+        { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
+        { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
+        { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" },
+      ],
+    };
 
     // Кэширование и stream_options
     addCachingSupport(body);
