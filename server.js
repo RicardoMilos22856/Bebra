@@ -20,10 +20,15 @@ const MAX_BODY_BYTES = Number(
 );
 
 // ==================== НОРМАЛИЗАЦИЯ ТОКЕНОВ ====================
+// Для Gemini токен-лимит не трогаем: передаём то, что пришло от клиента.
+// Для остальных моделей сохраняем прежнюю логику.
 function normalizeTokenLimit(body) {
+  if (isGeminiModel(body.model)) {
+    return;
+  }
+
   const rawValue = body.max_completion_tokens ?? body.max_tokens;
 
-  // ВСЕГДА удаляем max_tokens, чтобы провайдер не ругался на дублирование
   delete body.max_tokens;
 
   if (rawValue === undefined || rawValue === null) {
@@ -244,7 +249,7 @@ const server = http.createServer(async (req, res) => {
 
     if (body.model) body.model = normalizeModelName(body.model);
 
-    // Нормализация токенов (удаляет max_tokens, оставляет max_completion_tokens)
+    // Нормализация токенов (для Gemini не меняется)
     normalizeTokenLimit(body);
 
     // Настройки безопасности Gemini через extra_body
@@ -281,7 +286,7 @@ const server = http.createServer(async (req, res) => {
       if (!upstream.ok) {
         const errorText = await upstream.text();
         console.error(`🚨 [ROUTMY ERROR] Status ${upstream.status} | Response:`, errorText);
-        
+
         return json(res, upstream.status, {
           error: {
             message: `Rout.my upstream error: ${errorText}`,
