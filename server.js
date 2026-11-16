@@ -45,18 +45,6 @@ function normalizeTokenLimit(body) {
   body.max_completion_tokens = limit;
 }
 
-// ==================== ТЕСТОВЫЙ МИНИМАЛЬНЫЙ ЗАПРОС ====================
-// Оставляем только model, messages, stream, max_tokens.
-// extra_body, frequency_penalty, repetition_penalty, top_p и прочие поля не отправляются.
-function toMinimalBody(body) {
-  return {
-    model: body.model,
-    messages: body.messages,
-    stream: body.stream ?? false,
-    max_tokens: body.max_tokens ?? body.max_completion_tokens ?? 1300,
-  };
-}
-
 // ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
 function json(res, status, payload) {
   const body = JSON.stringify(payload);
@@ -264,7 +252,7 @@ const server = http.createServer(async (req, res) => {
     // Нормализация токенов (для Gemini не меняется)
     normalizeTokenLimit(body);
 
-    // Кэширование и stream_options (для минимального теста не отправляются)
+    // Кэширование и stream_options
     addCachingSupport(body);
 
     if (body.stream === true && INCLUDE_STREAM_USAGE) {
@@ -274,14 +262,13 @@ const server = http.createServer(async (req, res) => {
     const upstreamUrl = `${UPSTREAM_BASE_URL}/v1/chat/completions`;
 
     try {
-      // ТЕСТ: отправляем минимальное тело
-      const outgoingBody = toMinimalBody(body);
-      console.log("[OUTGOING BODY]", JSON.stringify(outgoingBody, null, 2));
+      // ОТЛАДКА: тело, которое уходит в rout.my (без ключа)
+      console.log("[OUTGOING BODY]", JSON.stringify(body, null, 2));
 
       const upstream = await fetch(upstreamUrl, {
         method: "POST",
         headers: makeUpstreamHeaders(),
-        body: JSON.stringify(outgoingBody),
+        body: JSON.stringify(body),
         signal: AbortSignal.timeout(10 * 60_000),
       });
 
