@@ -1,4 +1,5 @@
 import http from "node:http";
+import { URL } from "node:url";
 
 // ==================== КОНФИГУРАЦИЯ ====================
 const PORT = Number.parseInt(process.env.PORT || "3000", 10);
@@ -8,8 +9,46 @@ const UPSTREAM_BASE_URL = (
   process.env.UPSTREAM_BASE_URL || "https://api.rout.my"
 ).replace(/\/+$/, "");
 
-const ENABLE_CACHING = String(process.env.ENABLE_CACHING || "true").toLowerCase() === "true";
-const MAX_BODY_BYTES = Number(process.env.MAX_BODY_BYTES || 20 * 1024 * 1024);
+const INCLUDE_STREAM_USAGE =
+  String(process.env.INCLUDE_STREAM_USAGE || "false").toLowerCase() === "true";
+
+const ENABLE_CACHING =
+  String(process.env.ENABLE_CACHING || "true").toLowerCase() === "true";
+
+const MAX_BODY_BYTES = Number(
+  process.env.MAX_BODY_BYTES || 20 * 1024 * 1024
+);
+
+// ==================== НОРМАЛИЗАЦИЯ MAX TOKENS (с отладкой) ====================
+function normalizeTokenLimit(body) {
+  console.log("========== TOKEN DEBUG ==========");
+  console.log("Model:", body.model);
+  console.log("Received max_tokens:", body.max_tokens);
+  console.log("Received max_completion_tokens:", body.max_completion_tokens);
+
+  const rawValue = body.max_tokens ?? body.max_completion_tokens;
+
+  if (rawValue === undefined || rawValue === null) {
+    console.log("[TOKEN LIMIT] Janitor AI не прислал лимит токенов (используется дефолт провайдера)");
+    console.log("=================================");
+    return;
+  }
+
+  const limit = Number(rawValue);
+
+  if (!Number.isSafeInteger(limit) || limit <= 0) {
+    console.log("[TOKEN LIMIT] Получено невалидное значение:", rawValue);
+    console.log("=================================");
+    return;
+  }
+
+  // Rout.my поддерживает max_completion_tokens (согласно их доке)
+  body.max_completion_tokens = limit;
+  delete body.max_tokens;
+
+  console.log("[TOKEN LIMIT] Успешно установлено max_completion_tokens:", limit);
+  console.log("=================================");
+}
 
 // ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
 function json(res, status, payload) {
@@ -77,11 +116,81 @@ function normalizeModelName(model) {
   return model;
 }
 
-// ==================== КЭШИНГ ====================
+// ==================== КЭШИНГ (только Claude) ====================
 function addCachingSupport(body) {
   if (!ENABLE_CACHING) return;
   if (isClaudeModel(body.model)) {
     body.smart_cache = true;
+  }
+}
+
+// ==================== ФОРВАРДИНГ ====================
+function cleanUpstreamHeaders(upstream, res) {
+  const allowed = [
+    "content-type", "x-request-id", "retry-after", "x-ratelimit-limit",
+    "x-ratelimit-remaining", "x-ratelimit-reset", "x-context-limit",
+    "x-context-original-tokens", "x-cache-used-input-tokens", "x-cache-creation-input-tokens",
+  ];
+
+  for (const name of allowed) {
+    const value = upstream.headers.get(name);
+    if (value) res.setHeader(name, value);
+  }
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Cache-Control", "no-store");
+}
+
+async function forwardResponse(upstream, res) {
+  res.statusCode = upstream.status;
+  cleanUpstreamHeaders(upstream, res);
+
+  if (!upstream.body) return res.end();
+
+  const reader = upstream.body.getReader();
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (!res.write(Buffer.from(value))) {
+        await new Promise((resolve) => res.once("drain", resolve));
+      }
+    }
+    res.end();
+  } catch (e) {
+    console.error("Forward failed:", e.message);
+    if (!res.headersSent) {
+      json(res, 502, { error: { message: "Response forwarding failed", type: "proxy_error" } });
+    } else {
+      res.destroy(e);
+    }
+  }
+}
+
+async function forwardStreamResponse(upstream, res) {
+  res.statusCode = upstream.status;
+  cleanUpstreamHeaders(upstream, res);
+
+  if (!upstream.body) return res.end();
+
+  const reader = upstream.body.getReader();
+  const decoder = new TextDecoder();
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      const chunk = decoder.decode(value, { stream: true });
+      if (chunk) res.write(chunk);
+    }
+    const remaining = decoder.decode();
+    if (remaining) res.write(remaining);
+    res.end();
+  } catch (e) {
+    console.error("Stream forward failed:", e.message);
+    if (!res.headersSent) {
+      json(res, 502, { error: { message: "Stream forwarding failed", type: "proxy_error" } });
+    } else {
+      res.destroy(e);
+    }
   }
 }
 
@@ -91,22 +200,28 @@ const server = http.createServer(async (req, res) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-  res.setHeader("Access-Control-Expose-Headers", "x-request-id, x-proxy-name, x-cache-used-input-tokens, x-cache-creation-input-tokens");
+  res.setHeader(
+    "Access-Control-Expose-Headers",
+    "x-request-id, x-proxy-name, x-cache-used-input-tokens, x-cache-creation-input-tokens"
+  );
   res.setHeader("Cache-Control", "no-store");
 
+  // OPTIONS preflight
   if (req.method === "OPTIONS") {
     res.writeHead(204);
     return res.end();
   }
 
+  // Health check
   if (req.method === "GET" && (req.url === "/" || req.url === "/health")) {
     return json(res, 200, {
       ok: true,
-      service: "janitor-routmy-bridge",
+      service: "janitor-gemini-bridge",
       caching_enabled: ENABLE_CACHING,
     });
   }
 
+  // /v1/models
   if (req.method === "GET" && req.url === "/v1/models") {
     try {
       const upstream = await fetch(`${UPSTREAM_BASE_URL}/v1/models`, {
@@ -120,6 +235,7 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
+  // /v1/chat/completions
   if (req.method === "POST" && req.url === "/v1/chat/completions") {
     console.log(`Chat request from ${req.headers["x-forwarded-for"] || req.socket.remoteAddress}`);
 
@@ -140,19 +256,37 @@ const server = http.createServer(async (req, res) => {
 
     if (body.model) body.model = normalizeModelName(body.model);
 
-    // ==================== БЕЗОПАСНОСТЬ ПРЯМО В BODY (как в документации) ====================
+    // Нормализация токенов с отладкой
+    normalizeTokenLimit(body);
+
+    // Настройки безопасности Gemini передаются только в extra_body
     if (isGeminiModel(body.model)) {
-      body.safety_settings = [
-        { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "OFF" },
-        { category: "HARM_CATEGORY_HARASSMENT", threshold: "OFF" },
-        { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "OFF" },
-        { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "OFF" },
-        { category: "HARM_CATEGORY_CIVIC_INTEGRITY", threshold: "OFF" },
-      ];
+      body.extra_body = {
+        ...(body.extra_body || {}),
+        safety_settings: [
+          { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "OFF" },
+          { category: "HARM_CATEGORY_HARASSMENT", threshold: "OFF" },
+          { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "OFF" },
+          { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "OFF" },
+          { category: "HARM_CATEGORY_CIVIC_INTEGRITY", threshold: "OFF" },
+        ],
+      };
     }
 
-    // Кэширование
+    // Кэширование и stream_options
     addCachingSupport(body);
+
+    if (body.stream === true && INCLUDE_STREAM_USAGE) {
+      body.stream_options = { ...(body.stream_options || {}), include_usage: true };
+    }
+
+    console.log(JSON.stringify({
+      event: "chat_request",
+      model: body.model || "unspecified",
+      model_type: isGeminiModel(body.model) ? "gemini" : isClaudeModel(body.model) ? "claude" : "other",
+      stream: body.stream === true,
+      caching_enabled: ENABLE_CACHING,
+    }));
 
     const upstreamUrl = `${UPSTREAM_BASE_URL}/v1/chat/completions`;
 
@@ -164,12 +298,18 @@ const server = http.createServer(async (req, res) => {
         signal: AbortSignal.timeout(10 * 60_000),
       });
 
+      // Логируем ошибку, если Rout.my завернул запрос
+      if (!upstream.ok) {
+        const errorText = await upstream.clone().text();
+        console.error(`[ROUTMY ERROR] Status ${upstream.status}:`, errorText);
+      }
+
       if (body.stream === true) {
         return await forwardStreamResponse(upstream, res);
       }
       return await forwardResponse(upstream, res);
     } catch (e) {
-      console.error("Proxy error:", e.message);
+      console.error("[PROXY FETCH EXCEPTION]", e.message);
       return json(res, 502, { error: { message: "Could not reach rout.my", type: "proxy_error" } });
     }
   }
