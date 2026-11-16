@@ -79,10 +79,6 @@ function makeUpstreamHeaders() {
   };
 }
 
-function isGeminiModel(model) {
-  return typeof model === "string" && model.toLowerCase().includes("gemini");
-}
-
 function isClaudeModel(model) {
   return typeof model === "string" && model.toLowerCase().includes("claude");
 }
@@ -244,20 +240,6 @@ const server = http.createServer(async (req, res) => {
     // Нормализация токенов
     normalizeTokenLimit(body);
 
-    // Настройки безопасности Gemini
-    if (isGeminiModel(body.model)) {
-      body.extra_body = {
-        ...(body.extra_body || {}),
-        safety_settings: [
-          { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "OFF" },
-          { category: "HARM_CATEGORY_HARASSMENT", threshold: "OFF" },
-          { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "OFF" },
-          { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "OFF" },
-          { category: "HARM_CATEGORY_CIVIC_INTEGRITY", threshold: "OFF" },
-        ],
-      };
-    }
-
     // Кэширование и stream_options
     addCachingSupport(body);
 
@@ -275,12 +257,10 @@ const server = http.createServer(async (req, res) => {
         signal: AbortSignal.timeout(10 * 60_000),
       });
 
-      // РАСШИРЕННЫЙ ЛОГ ОШИБКИ АПСТРИМА
       if (!upstream.ok) {
         const errorText = await upstream.text();
         console.error(`🚨 [ROUTMY ERROR] Status ${upstream.status} | Response:`, errorText);
         
-        // Передаем точный текст ошибки обратно клиенту, чтобы видеть его в UI/консоли
         return json(res, upstream.status, {
           error: {
             message: `Rout.my upstream error: ${errorText}`,
