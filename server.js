@@ -8,9 +8,6 @@ const UPSTREAM_BASE_URL = (
   process.env.UPSTREAM_BASE_URL || "https://api.rout.my"
 ).replace(/\/+$/, "");
 
-const INCLUDE_STREAM_USAGE =
-  String(process.env.INCLUDE_STREAM_USAGE || "false").toLowerCase() === "true";
-
 const ENABLE_CACHING =
   String(process.env.ENABLE_CACHING || "true").toLowerCase() === "true";
 
@@ -84,36 +81,11 @@ function normalizeModelName(model) {
   return model;
 }
 
-// ==================== КЭШИНГ ====================
+// ==================== КЭШИНГ (только Claude) ====================
 function addCachingSupport(body) {
   if (!ENABLE_CACHING) return;
   if (isClaudeModel(body.model)) {
     body.smart_cache = true;
-  }
-}
-
-// ==================== НОРМАЛИЗАЦИЯ МАКС ТОКЕНОВ ====================
-function normalizeTokenLimit(body) {
-  const rawValue =
-    body.max_tokens ??
-    body.max_completion_tokens;
-
-  if (rawValue === undefined || rawValue === null) {
-    return;
-  }
-
-  const limit = Number(rawValue);
-
-  if (!Number.isSafeInteger(limit) || limit <= 0) {
-    return;
-  }
-
-  // Только для Gemini отдаём max_tokens (приоритет)
-  if (isGeminiModel(body.model)) {
-    body.max_completion_tokens = limit;
-    delete body.max_tokens;
-  } else {
-    body.max_completion_tokens = limit;
   }
 }
 
@@ -245,8 +217,7 @@ const server = http.createServer(async (req, res) => {
 
     if (body.model) body.model = normalizeModelName(body.model);
 
-    normalizeTokenLimit(body);
-
+    // ==================== БЕЗОПАСНОСТЬ (оставляем как ты хотел) ====================
     if (isGeminiModel(body.model)) {
       body.extra_body = {
         ...(body.extra_body || {}),
@@ -260,11 +231,8 @@ const server = http.createServer(async (req, res) => {
       };
     }
 
+    // Кэширование
     addCachingSupport(body);
-
-    if (body.stream === true && INCLUDE_STREAM_USAGE) {
-      body.stream_options = { ...(body.stream_options || {}), include_usage: true };
-    }
 
     const upstreamUrl = `${UPSTREAM_BASE_URL}/v1/chat/completions`;
 
