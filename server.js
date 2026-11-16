@@ -8,12 +8,8 @@ const UPSTREAM_BASE_URL = (
   process.env.UPSTREAM_BASE_URL || "https://api.rout.my"
 ).replace(/\/+$/, "");
 
-const ENABLE_CACHING =
-  String(process.env.ENABLE_CACHING || "true").toLowerCase() === "true";
-
-const MAX_BODY_BYTES = Number(
-  process.env.MAX_BODY_BYTES || 20 * 1024 * 1024
-);
+const ENABLE_CACHING = String(process.env.ENABLE_CACHING || "true").toLowerCase() === "true";
+const MAX_BODY_BYTES = Number(process.env.MAX_BODY_BYTES || 20 * 1024 * 1024);
 
 // ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
 function json(res, status, payload) {
@@ -89,15 +85,12 @@ function addCachingSupport(body) {
   }
 }
 
-// ==================== ОСНОВНОЙ СЕРВЕР (правильный) ====================
+// ==================== ОСНОВНОЙ СЕРВЕР ====================
 const server = http.createServer(async (req, res) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-  res.setHeader(
-    "Access-Control-Expose-Headers",
-    "x-request-id, x-proxy-name, x-cache-used-input-tokens, x-cache-creation-input-tokens"
-  );
+  res.setHeader("Access-Control-Expose-Headers", "x-request-id, x-proxy-name, x-cache-used-input-tokens, x-cache-creation-input-tokens");
   res.setHeader("Cache-Control", "no-store");
 
   if (req.method === "OPTIONS") {
@@ -139,14 +132,12 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (!body || typeof body !== "object" || Array.isArray(body)) {
-      return json(res, 400, {
-        error: { message: "JSON body must be an object", type: "invalid_request_error" },
-      });
+      return json(res, 400, { error: { message: "JSON body must be an object", type: "invalid_request_error" } });
     }
 
     if (body.model) body.model = normalizeModelName(body.model);
 
-    // ==================== БЕЗОПАСНОСТЬ (5 категорий OFF) ====================
+    // ==================== БЕЗОПАСНОСТЬ (только для Gemini) ====================
     if (isGeminiModel(body.model)) {
       body.extra_body = {
         ...(body.extra_body || {}),
