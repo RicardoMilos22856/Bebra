@@ -23,6 +23,9 @@ const MAX_BODY_BYTES = Number(
 function normalizeTokenLimit(body) {
   const rawValue = body.max_completion_tokens ?? body.max_tokens;
 
+  // ВСЕГДА удаляем max_tokens, чтобы провайдер не ругался на дублирование
+  delete body.max_tokens;
+
   if (rawValue === undefined || rawValue === null) {
     return;
   }
@@ -30,11 +33,11 @@ function normalizeTokenLimit(body) {
   const limit = Number(rawValue);
 
   if (!Number.isSafeInteger(limit) || limit <= 0) {
+    delete body.max_completion_tokens;
     return;
   }
 
   body.max_completion_tokens = limit;
-  body.max_tokens = limit;
 }
 
 // ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
@@ -77,6 +80,10 @@ function makeUpstreamHeaders() {
     "Content-Type": "application/json",
     Accept: "application/json, text/event-stream",
   };
+}
+
+function isGeminiModel(model) {
+  return typeof model === "string" && model.toLowerCase().includes("gemini");
 }
 
 function isClaudeModel(model) {
@@ -237,8 +244,22 @@ const server = http.createServer(async (req, res) => {
 
     if (body.model) body.model = normalizeModelName(body.model);
 
-    // Нормализация токенов
+    // Нормализация токенов (удаляет max_tokens, оставляет max_completion_tokens)
     normalizeTokenLimit(body);
+
+    // Настройки безопасности Gemini через extra_body
+    if (isGeminiModel(body.model)) {
+      body.extra_body = {
+        ...(body.extra_body || {}),
+        safety_settings: [
+          { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "OFF" },
+          { category: "HARM_CATEGORY_HARASSMENT", threshold: "OFF" },
+          { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "OFF" },
+          { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "OFF" },
+          { category: "HARM_CATEGORY_CIVIC_INTEGRITY", threshold: "OFF" },
+        ],
+      };
+    }
 
     // Кэширование и stream_options
     addCachingSupport(body);
