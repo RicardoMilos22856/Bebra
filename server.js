@@ -19,6 +19,27 @@ const MAX_BODY_BYTES = Number(
   process.env.MAX_BODY_BYTES || 20 * 1024 * 1024
 );
 
+// Параметры, которые upstream для Gemini отклоняет
+const GEMINI_UNSUPPORTED_PARAMS = ["frequency_penalty", "presence_penalty"];
+
+// ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
+function isGeminiModel(model) {
+  return typeof model === "string" && model.toLowerCase().includes("gemini");
+}
+
+function isClaudeModel(model) {
+  return typeof model === "string" && model.toLowerCase().includes("claude");
+}
+
+// Удаляет неподдерживаемые для Gemini параметры
+function stripUnsupportedParams(body) {
+  if (!isGeminiModel(body.model)) return;
+
+  for (const param of GEMINI_UNSUPPORTED_PARAMS) {
+    delete body[param];
+  }
+}
+
 // ==================== НОРМАЛИЗАЦИЯ ТОКЕНОВ ====================
 // Для Gemini токен-лимит не трогаем: передаём то, что пришло от клиента.
 // Для остальных моделей сохраняем прежнюю логику.
@@ -45,7 +66,6 @@ function normalizeTokenLimit(body) {
   body.max_completion_tokens = limit;
 }
 
-// ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
 function json(res, status, payload) {
   const body = JSON.stringify(payload);
   res.writeHead(status, {
@@ -85,14 +105,6 @@ function makeUpstreamHeaders() {
     "Content-Type": "application/json",
     Accept: "application/json, text/event-stream",
   };
-}
-
-function isGeminiModel(model) {
-  return typeof model === "string" && model.toLowerCase().includes("gemini");
-}
-
-function isClaudeModel(model) {
-  return typeof model === "string" && model.toLowerCase().includes("claude");
 }
 
 function normalizeModelName(model) {
@@ -249,8 +261,25 @@ const server = http.createServer(async (req, res) => {
 
     if (body.model) body.model = normalizeModelName(body.model);
 
+    // Удаляем параметры, которые Gemini не принимает
+    stripUnsupportedParams(body);
+
     // Нормализация токенов (для Gemini не меняется)
     normalizeTokenLimit(body);
+
+    // Настройки безопасности Gemini через extra_body
+    if (isGeminiModel(body.model)) {
+      body.extra_body = {
+        ...(body.extra_body || {}),
+        safety_settings: [
+          { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "OFF" },
+          { category: "HARM_CATEGORY_HARASSMENT", threshold: "OFF" },
+          { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "OFF" },
+          { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "OFF" },
+          { category: "HARM_CATEGORY_CIVIC_INTEGRITY", threshold: "OFF" },
+        ],
+      };
+    }
 
     // Кэширование и stream_options
     addCachingSupport(body);
@@ -262,7 +291,7 @@ const server = http.createServer(async (req, res) => {
     const upstreamUrl = `${UPSTREAM_BASE_URL}/v1/chat/completions`;
 
     try {
-      // ОТЛАДКА: тело, которое уходит в rout.my (без ключа)
+      // ОТЛАДКА: тело запроса, которое уходит в rout.my (без ключа)
       console.log("[OUTGOING BODY]", JSON.stringify(body, null, 2));
 
       const upstream = await fetch(upstreamUrl, {
@@ -279,8 +308,8 @@ const server = http.createServer(async (req, res) => {
         return json(res, upstream.status, {
           error: {
             message: `Rout.my upstream error: ${errorText}`,
-            type: "upstream_error"
-          }
+            type: "upstream_error",
+          },
         });
       }
 
