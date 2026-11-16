@@ -87,6 +87,7 @@ function addCachingSupport(body) {
 
 // ==================== ОСНОВНОЙ СЕРВЕР ====================
 const server = http.createServer(async (req, res) => {
+  // CORS
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
@@ -132,23 +133,22 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (!body || typeof body !== "object" || Array.isArray(body)) {
-      return json(res, 400, { error: { message: "JSON body must be an object", type: "invalid_request_error" } });
+      return json(res, 400, {
+        error: { message: "JSON body must be an object", type: "invalid_request_error" },
+      });
     }
 
     if (body.model) body.model = normalizeModelName(body.model);
 
-    // ==================== БЕЗОПАСНОСТЬ (только для Gemini) ====================
+    // ==================== БЕЗОПАСНОСТЬ ПРЯМО В BODY (как в документации) ====================
     if (isGeminiModel(body.model)) {
-      body.extra_body = {
-        ...(body.extra_body || {}),
-        safety_settings: [
-          { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "OFF" },
-          { category: "HARM_CATEGORY_HARASSMENT", threshold: "OFF" },
-          { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "OFF" },
-          { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "OFF" },
-          { category: "HARM_CATEGORY_CIVIC_INTEGRITY", threshold: "OFF" },
-        ],
-      };
+      body.safety_settings = [
+        { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "OFF" },
+        { category: "HARM_CATEGORY_HARASSMENT", threshold: "OFF" },
+        { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "OFF" },
+        { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "OFF" },
+        { category: "HARM_CATEGORY_CIVIC_INTEGRITY", threshold: "OFF" },
+      ];
     }
 
     // Кэширование
@@ -169,6 +169,7 @@ const server = http.createServer(async (req, res) => {
       }
       return await forwardResponse(upstream, res);
     } catch (e) {
+      console.error("Proxy error:", e.message);
       return json(res, 502, { error: { message: "Could not reach rout.my", type: "proxy_error" } });
     }
   }
