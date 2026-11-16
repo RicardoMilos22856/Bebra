@@ -62,10 +62,8 @@ async function readJsonBody(req) {
     chunks.push(chunk);
   }
 
-  const rawString = Buffer.concat(chunks).toString("utf8");
-
   try {
-    return JSON.parse(rawString);
+    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
   } catch {
     const error = new Error("Request body must be valid JSON");
     error.status = 400;
@@ -225,13 +223,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   // /v1/chat/completions
-  if (req.method === "POST" && req.url.startsWith("/v1/chat/completions")) {
-    // 1. Дамп URL и заголовков от Janitor AI
-    console.log("========== FULL REQUEST DUMP ==========");
-    console.log("URL:", req.url);
-    console.log("HEADERS:", JSON.stringify(req.headers, null, 2));
-    console.log("=======================================");
-
+  if (req.method === "POST" && req.url === "/v1/chat/completions") {
     let body;
     try {
       body = await readJsonBody(req);
@@ -249,7 +241,7 @@ const server = http.createServer(async (req, res) => {
 
     if (body.model) body.model = normalizeModelName(body.model);
 
-    // Нормализация токенов
+    // Нормализация лимита токенов
     normalizeTokenLimit(body);
 
     // Настройки безопасности Gemini
@@ -273,12 +265,6 @@ const server = http.createServer(async (req, res) => {
       body.stream_options = { ...(body.stream_options || {}), include_usage: true };
     }
 
-    // 2. Логируем итоговый объект (без массива сообщений, чтобы не засорять консоль)
-    const { messages, ...debugOut } = body;
-    console.log("========== OUTGOING TO ROUT.MY ==========");
-    console.log(JSON.stringify(debugOut, null, 2));
-    console.log("=========================================");
-
     const upstreamUrl = `${UPSTREAM_BASE_URL}/v1/chat/completions`;
 
     try {
@@ -289,6 +275,7 @@ const server = http.createServer(async (req, res) => {
         signal: AbortSignal.timeout(10 * 60_000),
       });
 
+      // Логируем только ошибки апстрима, если они возникают
       if (!upstream.ok) {
         const errorText = await upstream.clone().text();
         console.error(`[ROUTMY ERROR] Status ${upstream.status}:`, errorText);
