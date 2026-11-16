@@ -45,6 +45,29 @@ console.log("ENABLE_CACHING:", ENABLE_CACHING);
 console.log("INCLUDE_STREAM_USAGE:", INCLUDE_STREAM_USAGE);
 console.log("ROUTMY_API_KEY: configured");
 
+// ==================== ЛОГИРОВАНИЕ ПАРАМЕТРОВ ====================
+const LOGGED_PARAMS = ["max_tokens", "max_completion_tokens", "temperature", "top_p", "stream"];
+
+function logIncomingParams(body) {
+  const info = {};
+  for (const key of LOGGED_PARAMS) {
+    if (key in body) {
+      info[key] = { value: body[key], type: typeof body[key] };
+    }
+  }
+  console.log("[PARAMS IN]", JSON.stringify(info));
+}
+
+function logOutgoingParams(body) {
+  console.log("[PARAMS OUT]", JSON.stringify({
+    model: body.model,
+    max_tokens: body.max_tokens,
+    max_completion_tokens: body.max_completion_tokens,
+    has_smart_cache: "smart_cache" in body,
+    has_safety_settings: Boolean(body.extra_body?.safety_settings),
+  }));
+}
+
 // ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
 function json(res, status, payload) {
   const body = JSON.stringify(payload);
@@ -249,18 +272,9 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
-    if (body.model) body.model = normalizeModelName(body.model);
+    logIncomingParams(body);
 
-    // Нормализация max_tokens → max_completion_tokens
-    if (Number.isInteger(body.max_completion_tokens) && body.max_completion_tokens > 0) {
-      delete body.max_tokens;
-    } else if (Number.isInteger(body.max_tokens) && body.max_tokens > 0) {
-      body.max_completion_tokens = body.max_tokens;
-      delete body.max_tokens;
-    } else {
-      delete body.max_tokens;
-      delete body.max_completion_tokens;
-    }
+    if (body.model) body.model = normalizeModelName(body.model);
 
     // Настройки безопасности Gemini передаются только в extra_body
     if (isGeminiModel(body.model)) {
@@ -276,6 +290,8 @@ const server = http.createServer(async (req, res) => {
     if (body.stream === true && INCLUDE_STREAM_USAGE) {
       body.stream_options = { ...(body.stream_options || {}), include_usage: true };
     }
+
+    logOutgoingParams(body);
 
     console.log(JSON.stringify({
       event: "chat_request",
