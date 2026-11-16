@@ -1,5 +1,4 @@
 import http from "node:http";
-import { URL } from "node:url";
 
 // ==================== КОНФИГУРАЦИЯ ====================
 const PORT = Number.parseInt(process.env.PORT || "3000", 10);
@@ -93,7 +92,7 @@ function addCachingSupport(body) {
   }
 }
 
-// ==================== НОРМАЛИЗАЦИЯ MAX TOKENS ====================
+// ==================== НОРМАЛИЗАЦИЯ МАКС ТОКЕНОВ ====================
 function normalizeTokenLimit(body) {
   const rawValue =
     body.max_tokens ??
@@ -106,22 +105,16 @@ function normalizeTokenLimit(body) {
   const limit = Number(rawValue);
 
   if (!Number.isSafeInteger(limit) || limit <= 0) {
-    console.log("[TOKEN LIMIT] Invalid value:", rawValue);
     return;
   }
 
-  // Приоритет: если есть max_tokens — отдаём его (как у Janitor)
-  if (body.max_tokens !== undefined) {
+  // Только для Gemini отдаём max_tokens (приоритет)
+  if (isGeminiModel(body.model)) {
     body.max_completion_tokens = limit;
     delete body.max_tokens;
   } else {
     body.max_completion_tokens = limit;
   }
-
-  console.log("[TOKEN LIMIT]", {
-    received: rawValue,
-    sent: limit
-  });
 }
 
 // ==================== ФОРВАРДИНГ ====================
@@ -211,7 +204,6 @@ const server = http.createServer(async (req, res) => {
     return res.end();
   }
 
-  // Health check
   if (req.method === "GET" && (req.url === "/" || req.url === "/health")) {
     return json(res, 200, {
       ok: true,
@@ -220,7 +212,6 @@ const server = http.createServer(async (req, res) => {
     });
   }
 
-  // /v1/models
   if (req.method === "GET" && req.url === "/v1/models") {
     try {
       const upstream = await fetch(`${UPSTREAM_BASE_URL}/v1/models`, {
@@ -234,7 +225,6 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  // /v1/chat/completions
   if (req.method === "POST" && req.url === "/v1/chat/completions") {
     console.log(`Chat request from ${req.headers["x-forwarded-for"] || req.socket.remoteAddress}`);
 
@@ -255,10 +245,8 @@ const server = http.createServer(async (req, res) => {
 
     if (body.model) body.model = normalizeModelName(body.model);
 
-    // ==================== НОРМАЛИЗАЦИЯ МАКС ТОКЕНОВ (исправлена) ====================
     normalizeTokenLimit(body);
 
-    // Настройки безопасности (5 категорий с OFF)
     if (isGeminiModel(body.model)) {
       body.extra_body = {
         ...(body.extra_body || {}),
@@ -272,20 +260,11 @@ const server = http.createServer(async (req, res) => {
       };
     }
 
-    // Кэширование
     addCachingSupport(body);
 
     if (body.stream === true && INCLUDE_STREAM_USAGE) {
       body.stream_options = { ...(body.stream_options || {}), include_usage: true };
     }
-
-    console.log(JSON.stringify({
-      event: "chat_request",
-      model: body.model || "unspecified",
-      model_type: isGeminiModel(body.model) ? "gemini" : isClaudeModel(body.model) ? "claude" : "other",
-      stream: body.stream === true,
-      caching_enabled: ENABLE_CACHING,
-    }));
 
     const upstreamUrl = `${UPSTREAM_BASE_URL}/v1/chat/completions`;
 
