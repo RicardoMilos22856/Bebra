@@ -276,6 +276,9 @@ const server = http.createServer(async (req, res) => {
     const upstreamUrl = `${UPSTREAM_BASE_URL}/v1/chat/completions`;
 
     try {
+      // ОТЛАДКА: вывести тело запроса, которое уходит в rout.my (без ключа)
+console.log("[OUTGOING BODY]", JSON.stringify(body, null, 2));
+
       const upstream = await fetch(upstreamUrl, {
         method: "POST",
         headers: makeUpstreamHeaders(),
