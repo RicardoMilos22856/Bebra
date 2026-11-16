@@ -19,26 +19,32 @@ const MAX_BODY_BYTES = Number(
   process.env.MAX_BODY_BYTES || 20 * 1024 * 1024
 );
 
-// ==================== НОРМАЛИЗАЦИЯ ТОКЕНОВ ====================
-function normalizeTokenLimit(body) {
-  const rawValue = body.max_completion_tokens ?? body.max_tokens;
+// Настройки безопасности Gemini: все категории отключены
+const GEMINI_SAFETY_SETTINGS = [
+  { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "OFF" },
+  { category: "HARM_CATEGORY_HARASSMENT", threshold: "OFF" },
+  { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "OFF" },
+  { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "OFF" },
+  { category: "HARM_CATEGORY_CIVIC_INTEGRITY", threshold: "OFF" },
+];
 
-  // ВСЕГДА удаляем max_tokens, чтобы провайдер не ругался на дублирование
-  delete body.max_tokens;
-
-  if (rawValue === undefined || rawValue === null) {
-    return;
-  }
-
-  const limit = Number(rawValue);
-
-  if (!Number.isSafeInteger(limit) || limit <= 0) {
-    delete body.max_completion_tokens;
-    return;
-  }
-
-  body.max_completion_tokens = limit;
+// ==================== ВАЛИДАЦИЯ ====================
+if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) {
+  console.error("Invalid PORT");
+  process.exit(1);
 }
+
+if (!ROUTMY_API_KEY) {
+  console.error("Missing ROUTMY_API_KEY environment variable.");
+  process.exit(1);
+}
+
+console.log("Starting Janitor AI → Gemini Bridge");
+console.log("PORT:", PORT);
+console.log("UPSTREAM_BASE_URL:", UPSTREAM_BASE_URL);
+console.log("ENABLE_CACHING:", ENABLE_CACHING);
+console.log("INCLUDE_STREAM_USAGE:", INCLUDE_STREAM_USAGE);
+console.log("ROUTMY_API_KEY: configured");
 
 // ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
 function json(res, status, payload) {
@@ -112,6 +118,32 @@ function addCachingSupport(body) {
   if (isClaudeModel(body.model)) {
     body.smart_cache = true;
   }
+}
+
+// ==================== НОРМАЛИЗАЦИЯ MAX TOKENS ====================
+function normalizeTokenLimit(body) {
+  const rawValue = body.max_tokens ?? body.max_completion_tokens;
+
+  // Всегда удаляем max_tokens, чтобы не отправлять оба параметра
+  delete body.max_tokens;
+
+  if (rawValue === undefined || rawValue === null) {
+    return;
+  }
+
+  const limit = Number(rawValue);
+
+  if (!Number.isSafeInteger(limit) || limit <= 0) {
+    console.log("[TOKEN LIMIT] Invalid value:", rawValue);
+    return;
+  }
+
+  body.max_completion_tokens = limit;
+
+  console.log("[TOKEN LIMIT]", {
+    received: rawValue,
+    sent: limit,
+  });
 }
 
 // ==================== ФОРВАРДИНГ ====================
@@ -227,6 +259,8 @@ const server = http.createServer(async (req, res) => {
 
   // /v1/chat/completions
   if (req.method === "POST" && req.url === "/v1/chat/completions") {
+    console.log(`Chat request from ${req.headers["x-forwarded-for"] || req.socket.remoteAddress}`);
+
     let body;
     try {
       body = await readJsonBody(req);
@@ -244,20 +278,13 @@ const server = http.createServer(async (req, res) => {
 
     if (body.model) body.model = normalizeModelName(body.model);
 
-    // Нормализация токенов (удаляет max_tokens, оставляет max_completion_tokens)
     normalizeTokenLimit(body);
 
-    // Настройки безопасности Gemini через extra_body
+    // Настройки безопасности Gemini передаются только в extra_body
     if (isGeminiModel(body.model)) {
       body.extra_body = {
         ...(body.extra_body || {}),
-        safety_settings: [
-          { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "OFF" },
-          { category: "HARM_CATEGORY_HARASSMENT", threshold: "OFF" },
-          { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "OFF" },
-          { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "OFF" },
-          { category: "HARM_CATEGORY_CIVIC_INTEGRITY", threshold: "OFF" },
-        ],
+        safety_settings: GEMINI_SAFETY_SETTINGS,
       };
     }
 
@@ -267,6 +294,14 @@ const server = http.createServer(async (req, res) => {
     if (body.stream === true && INCLUDE_STREAM_USAGE) {
       body.stream_options = { ...(body.stream_options || {}), include_usage: true };
     }
+
+    console.log(JSON.stringify({
+      event: "chat_request",
+      model: body.model || "unspecified",
+      model_type: isGeminiModel(body.model) ? "gemini" : isClaudeModel(body.model) ? "claude" : "other",
+      stream: body.stream === true,
+      caching_enabled: ENABLE_CACHING,
+    }));
 
     const upstreamUrl = `${UPSTREAM_BASE_URL}/v1/chat/completions`;
 
@@ -278,24 +313,11 @@ const server = http.createServer(async (req, res) => {
         signal: AbortSignal.timeout(10 * 60_000),
       });
 
-      if (!upstream.ok) {
-        const errorText = await upstream.text();
-        console.error(`🚨 [ROUTMY ERROR] Status ${upstream.status} | Response:`, errorText);
-        
-        return json(res, upstream.status, {
-          error: {
-            message: `Rout.my upstream error: ${errorText}`,
-            type: "upstream_error"
-          }
-        });
-      }
-
       if (body.stream === true) {
         return await forwardStreamResponse(upstream, res);
       }
       return await forwardResponse(upstream, res);
     } catch (e) {
-      console.error("[PROXY FETCH EXCEPTION]", e.message);
       return json(res, 502, { error: { message: "Could not reach rout.my", type: "proxy_error" } });
     }
   }
